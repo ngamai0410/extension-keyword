@@ -402,7 +402,7 @@ document.addEventListener("DOMContentLoaded", () => {
         clicks: q.clickCount || 0,
         click_rate: q.clickRate || 0,
         views: q.impressionCounts || 0,
-        relevant: q.isRelevant != null ? q.isRelevant : true
+        relevant: q.isRelevant != null ? String(q.isRelevant) : null
       });
     }
   }
@@ -1134,11 +1134,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function initPageContext() {
+  function initPageContext(cb) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const url = (tabs && tabs[0] && tabs[0].url) || "";
       currentPageType = detectPageType(url);
       applyPageContext(currentPageType);
+      if (cb) cb();
     });
   }
 
@@ -1931,14 +1932,15 @@ function parseListingIds(raw) {
   }
 
   // --- INIT ---
+  // Detect page type first so applyPageContext has the correct value
+  // when loadData renders sessions — avoids a double-render with "other" type.
   loadKeywordUrlTemplate();
+  loadDbConfig();
+  loadBotStatus();
   chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
     keywordQueue = (r && r.queue) || [];
     renderKeywordQueue();
     refreshBotProgress();
+    initPageContext(() => loadData());
   });
-  loadData();
-  loadDbConfig();
-  loadBotStatus();
-  initPageContext();
 });

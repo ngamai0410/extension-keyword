@@ -676,10 +676,11 @@ const bot = {
   tabId: null,
   settleTimer: null,
   expandFallback: null,
+  waitingTimer: null, // auto-skip timer when state === "waiting_user"
   urlTemplate: null,
   connectionString: null,
   errorMsg: null,    // populated when state === "waiting_user"
-  errorType: null,   // "no_data" | "db_error"
+  errorType: null,   // "no_data" | "db_error" | "no_listing"
 };
 
 // --- Queue helpers -------------------------------------------------------
@@ -828,8 +829,9 @@ async function botOpenNext() {
 }
 
 function clearBotTimers() {
-  if (bot.settleTimer) { clearTimeout(bot.settleTimer); bot.settleTimer = null; }
-  if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
+  if (bot.settleTimer)   { clearTimeout(bot.settleTimer);   bot.settleTimer   = null; }
+  if (bot.expandFallback){ clearTimeout(bot.expandFallback); bot.expandFallback = null; }
+  if (bot.waitingTimer)  { clearTimeout(bot.waitingTimer);  bot.waitingTimer  = null; }
 }
 
 function scheduleBotSettle() {
@@ -837,6 +839,29 @@ function scheduleBotSettle() {
   if (bot.settleTimer) clearTimeout(bot.settleTimer);
   bot.settleTimer = setTimeout(botSaveAndAdvance, jitter(...BOT_SETTLE));
   bot.state = "capturing";
+}
+
+// Auto-skip after 60 min if popup is never reopened to answer the prompt
+const BOT_WAITING_TIMEOUT = 60 * 60 * 1000;
+
+function enterWaitingUser(errorMsg, errorType) {
+  if (bot.waitingTimer) clearTimeout(bot.waitingTimer);
+  bot.state     = "waiting_user";
+  bot.errorMsg  = errorMsg;
+  bot.errorType = errorType;
+  botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: errorMsg });
+
+  bot.waitingTimer = setTimeout(async () => {
+    if (bot.state !== "waiting_user") return;
+    const skipStatus = bot.errorType === "no_data" ? "skipped" : "error";
+    bot.errorMsg  = null;
+    bot.errorType = null;
+    bot.waitingTimer = null;
+    await botMarkListing(bot.listingId, skipStatus);
+    await chrome.storage.local.set({ [STORAGE_KEY]: [] });
+    updateBadge(0);
+    await botOpenNext();
+  }, BOT_WAITING_TIMEOUT);
 }
 
 async function botSaveAndAdvance() {
@@ -852,10 +877,7 @@ async function botSaveAndAdvance() {
 
   // No keyword data found — prompt user to retry or skip
   if (rows.length === 0) {
-    bot.state     = "waiting_user";
-    bot.errorMsg  = `No keyword data found for listing ${bot.listingId}`;
-    bot.errorType = "no_data";
-    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
+    enterWaitingUser(`No keyword data found for listing ${bot.listingId}`, "no_data");
     return;
   }
 
@@ -867,17 +889,14 @@ async function botSaveAndAdvance() {
       handleInsertKeywordsToDb(rows, bot.connectionString, resolve)
     );
     saveOk = r.ok;
-    saveMsg = r.message || r.error || "";
+    saveMsg = r.message || r.error || "Unknown database error";
   } catch (e) {
-    saveMsg = String(e.message || e);
+    saveMsg = String(e.message || e) || "Unknown database error";
   }
 
   // DB / network error — prompt user to retry or skip
   if (!saveOk) {
-    bot.state     = "waiting_user";
-    bot.errorMsg  = saveMsg;
-    bot.errorType = "db_error";
-    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: saveMsg });
+    enterWaitingUser(saveMsg, "db_error");
     return;
   }
 
@@ -905,6 +924,7 @@ async function botSaveAndAdvance() {
 
 async function handleBotResume(decision, sendResponse) {
   sendResponse({ ok: true });
+  if (bot.waitingTimer) { clearTimeout(bot.waitingTimer); bot.waitingTimer = null; }
   const errorType = bot.errorType || "db_error";
   bot.errorMsg  = null;
   bot.errorType = null;
@@ -995,7 +1015,7 @@ function buildKeywordRowsFromSessions(sessions, targetListingId) {
         spend: q.cost || 0,
         revenue: q.revenue || 0,
         clicks: q.clickCount || 0,
-        click_rate: q.clickRate || 0,
+        click_rate: String(q.clickRate || 0),
         views: q.impressionCounts || 0,
         import_time: importTime,
         importer: "getify_bot",
