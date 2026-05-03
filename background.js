@@ -507,6 +507,28 @@ async function handleInsertKeywordsToDb(rows, connectionString, sendResponse) {
       return;
     }
 
+    // Guard: every listing_id in this batch must already exist in listing_report
+    const listingIds = [...new Set(rows.map((r) => String(r.listing_id || "")).filter(Boolean))];
+    if (listingIds.length > 0) {
+      const placeholders = listingIds.map((_, i) => `$${i + 1}`).join(", ");
+      const checkResult = await neonHttpQuery(connectionString, {
+        query: `SELECT listing_id FROM listing_report WHERE listing_id = ANY(ARRAY[${placeholders}]) GROUP BY listing_id`,
+        params: listingIds,
+      });
+      const foundIds = new Set(
+        (Array.isArray(checkResult) ? checkResult : (checkResult.rows || []))
+          .map((r) => String(r.listing_id))
+      );
+      const missing = listingIds.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        sendResponse({
+          ok: false,
+          error: `Cannot insert keywords — listing(s) not in listing_report yet: ${missing.join(", ")}. Add them via "Add Listings to DB" first.`,
+        });
+        return;
+      }
+    }
+
     const columns = [
       "listing_id",
       "keyword",
@@ -833,34 +855,6 @@ async function botSaveAndAdvance() {
     bot.state     = "waiting_user";
     bot.errorMsg  = `No keyword data found for listing ${bot.listingId}`;
     bot.errorType = "no_data";
-    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
-    return;
-  }
-
-  // Guard: listing must exist in listing_report before keywords can be inserted
-  try {
-    const checkResult = await neonHttpQuery(bot.connectionString, {
-      query: "SELECT COUNT(*)::int AS cnt FROM listing_report WHERE listing_id = $1",
-      params: [bot.listingId],
-    });
-    const cnt =
-      checkResult && Array.isArray(checkResult) && checkResult[0]
-        ? Number(checkResult[0].cnt)
-        : checkResult && checkResult.rows && checkResult.rows[0]
-          ? Number(checkResult.rows[0].cnt)
-          : 0;
-
-    if (cnt === 0) {
-      bot.state     = "waiting_user";
-      bot.errorMsg  = `Listing ${bot.listingId} not in listing_report yet — go to Ads Dashboard, click "Add Listings to DB", then Retry.`;
-      bot.errorType = "no_listing";
-      botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
-      return;
-    }
-  } catch (e) {
-    bot.state     = "waiting_user";
-    bot.errorMsg  = `DB check failed: ${String(e.message || e)}`;
-    bot.errorType = "db_error";
     botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
     return;
   }
