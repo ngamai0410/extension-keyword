@@ -47,6 +47,22 @@ body {
   color: #8888aa;
 }
 
+.page-badge {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.page-badge.dashboard { background: #1a3a22; color: #a8f2ca; }
+.page-badge.keywords  { background: #162038; color: #9ed4ff; }
+.page-badge.etsy      { background: #3a2a10; color: #ffd59e; }
+.page-badge.other     { background: #252535; color: #8888aa; }
+
 /* --- Controls --- */
 
 .controls {

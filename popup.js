@@ -42,6 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let allSessions = [];
   let keywordQueue = [];
   let botRunning = false;
+  let currentPageType = "other"; // dashboard | keywords | etsy_other | other
 
   // --- LOAD DATA ---
 
@@ -70,7 +71,7 @@ document.addEventListener("DOMContentLoaded", () => {
       btnAddDb.disabled = true;
       btnAddDbKeywords.disabled = true;
       btnClear.disabled = true;
-      setDbStatus("No captured data to insert yet.", "info");
+      applyPageContext(currentPageType);
       return;
     }
 
@@ -81,7 +82,8 @@ document.addEventListener("DOMContentLoaded", () => {
     btnAddDb.disabled = false;
     btnAddDbKeywords.disabled = false;
     btnClear.disabled = false;
-    setDbStatus("Ready to insert listing_report_rows.", "info");
+    setDbStatus("Ready to insert.", "info");
+    applyPageContext(currentPageType);
 
     // Render newest first
     const reversed = [...allSessions].reverse();
@@ -1047,6 +1049,98 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // =====================================================================
+  // PAGE CONTEXT — show only relevant controls per page type
+  // =====================================================================
+
+  function detectPageType(url) {
+    if (!url || !url.includes("etsy.com")) return "other";
+    if (/\/advertising\/listings\/\d+/.test(url)) return "keywords";
+    if (/\/advertising/.test(url)) return "dashboard";
+    return "etsy_other";
+  }
+
+  function hasKeywordData() {
+    return allSessions.some((s) => {
+      const b = s.body;
+      return (
+        b &&
+        typeof b === "object" &&
+        ((Array.isArray(b.queryStats) && b.queryStats.length > 0) ||
+          (Array.isArray(b.queries) && b.queries.length > 0))
+      );
+    });
+  }
+
+  function show(el) { if (el) el.style.display = ""; }
+  function hide(el) { if (el) el.style.display = "none"; }
+  function showIf(el, cond) { cond ? show(el) : hide(el); }
+
+  function applyPageContext(pageType) {
+    const isDashboard = pageType === "dashboard";
+    const isKeywords  = pageType === "keywords";
+    const hasData     = allSessions.length > 0;
+    const hasKwData   = hasKeywordData();
+    const hasQueue    = keywordQueue.length > 0;
+
+    // --- Top action buttons ---
+    showIf(btnExportClean,   hasData);
+    showIf(btnExport,        hasData && !isKeywords);
+    showIf(btnExportCsv,     hasData && isDashboard);
+    showIf(btnAddDb,         hasData && isDashboard);
+    showIf(btnAddDbKeywords, isKeywords && hasKwData);
+    showIf(btnClear,         hasData);
+    // Settings button always visible
+
+    // --- Keyword Queue panel ---
+    const queuePanel = document.getElementById("queue-panel");
+    showIf(queuePanel, isDashboard || hasQueue);
+
+    // Inside queue panel: context-specific controls
+    showIf(btnRefreshQueue,                              isDashboard);
+    showIf(document.getElementById("queue-template-row"), isDashboard);
+    showIf(document.getElementById("queue-actions-row"),  isDashboard);
+    // Mark Done remains inside queue-actions-row so it's visible on dashboard
+
+    // --- Bot panel ---
+    const botPanelEl = document.getElementById("bot-panel");
+    showIf(botPanelEl, isDashboard || botRunning || hasQueue);
+
+    // --- Page badge ---
+    const badge = document.getElementById("page-badge");
+    if (badge) {
+      const MAP = {
+        dashboard:  ["Ads Dashboard", "dashboard"],
+        keywords:   ["Keyword Stats",  "keywords"],
+        etsy_other: ["Etsy",           "etsy"],
+        other:      ["Outside Etsy",   "other"],
+      };
+      const [label, cls] = MAP[pageType] || ["Unknown", "other"];
+      badge.textContent = label;
+      badge.className = "page-badge " + cls;
+      show(badge);
+    }
+
+    // --- Contextual db-status hint when no data ---
+    if (!hasData) {
+      if (isDashboard) {
+        setDbStatus("On the Ads Dashboard — scroll the listing table to capture data.", "info");
+      } else if (isKeywords) {
+        setDbStatus("Keyword page detected — waiting for API data to load.", "info");
+      } else {
+        setDbStatus("Navigate to your Etsy Ads Dashboard to capture listing data.", "info");
+      }
+    }
+  }
+
+  function initPageContext() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const url = (tabs && tabs[0] && tabs[0].url) || "";
+      currentPageType = detectPageType(url);
+      applyPageContext(currentPageType);
+    });
+  }
+
+  // =====================================================================
   // MANUAL KEYWORD QUEUE
   // =====================================================================
 
@@ -1820,4 +1914,5 @@ document.addEventListener("DOMContentLoaded", () => {
   loadData();
   loadDbConfig();
   loadBotStatus();
+  initPageContext();
 });

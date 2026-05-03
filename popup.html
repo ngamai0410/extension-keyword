@@ -12,6 +12,7 @@
     <header class="header">
       <h1>Getify Ads Spy</h1>
       <p class="subtitle" id="stats-line">Loading...</p>
+      <span class="page-badge" id="page-badge" style="display:none"></span>
     </header>
 
     <!-- Controls -->
@@ -54,21 +55,23 @@
           Refresh
         </button>
       </div>
-      <label class="settings-label" for="input-keyword-url-template">
-        Keyword URL Template
-      </label>
-      <input
-        type="text"
-        id="input-keyword-url-template"
-        class="settings-input"
-        placeholder="Paste Etsy listing keyword URL and replace the listing id with {listing_id}"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <div class="settings-hint">
-        Use {listing_id} where the listing id should go. Open Next only opens one listing at a time.
+      <div id="queue-template-row">
+        <label class="settings-label" for="input-keyword-url-template">
+          Keyword URL Template
+        </label>
+        <input
+          type="text"
+          id="input-keyword-url-template"
+          class="settings-input"
+          placeholder="Paste Etsy listing keyword URL and replace the listing id with {listing_id}"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="settings-hint">
+          Use {listing_id} where the listing id should go. Open Next only opens one listing at a time.
+        </div>
       </div>
-      <div class="queue-actions">
+      <div class="queue-actions" id="queue-actions-row">
         <button id="btn-open-next-keyword" class="btn btn-queue" disabled>
           Open Next
         </button>
