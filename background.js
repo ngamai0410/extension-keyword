@@ -698,8 +698,8 @@ async function botStart(urlTemplate) {
 
   // Shuffle pending items so the access order is non-sequential
   const queue = await queueGet();
-  const pending = queue.filter((q) => !q.status || q.status === "pending" || q.status === "error");
-  const others  = queue.filter((q) => q.status && q.status !== "pending" && q.status !== "error");
+  const pending = queue.filter((q) => !q.status || q.status === "pending");
+  const others  = queue.filter((q) => q.status && q.status !== "pending");
   for (let k = pending.length - 1; k > 0; k--) {
     const j = Math.floor(Math.random() * (k + 1));
     [pending[k], pending[j]] = [pending[j], pending[k]];
@@ -722,7 +722,7 @@ async function botOpenNext() {
 
   const queue = await queueGet();
   const item = queue.find(
-    (q) => !q.status || q.status === "pending" || q.status === "error"
+    (q) => !q.status || q.status === "pending"
   );
 
   if (!item) {
@@ -823,7 +823,9 @@ async function botSaveAndAdvance() {
     saveMsg = `No keyword data captured for listing ${bot.listingId}`;
   }
 
-  await botMarkListing(bot.listingId, saveOk && rows.length > 0 ? "done" : "error");
+  // "skipped" = page had no keyword data (don't retry)
+  // "error"   = DB/network failure (also don't retry, but distinguishable in queue view)
+  await botMarkListing(bot.listingId, saveOk && rows.length > 0 ? "done" : rows.length === 0 ? "skipped" : "error");
 
   botNotify({
     action: "BOT_LISTING_SAVED",
