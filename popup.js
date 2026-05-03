@@ -1082,27 +1082,30 @@ document.addEventListener("DOMContentLoaded", () => {
     const hasQueue    = keywordQueue.length > 0;
 
     // --- Top action buttons ---
-    showIf(btnExportClean,   hasData);
-    showIf(btnExport,        hasData && !isKeywords);
-    showIf(btnExportCsv,     hasData && isDashboard);
+    // Dashboard: only show Add Listings to DB as the primary action.
+    // Queue and bot panels reveal themselves after a successful insert.
+    showIf(btnExportClean,   hasData && !isDashboard);
+    showIf(btnExport,        hasData && !isKeywords && !isDashboard);
+    showIf(btnExportCsv,     hasData && isDashboard && hasQueue);
     showIf(btnAddDb,         hasData && isDashboard);
     showIf(btnAddDbKeywords, isKeywords && hasKwData);
-    showIf(btnClear,         hasData);
+    showIf(btnClear,         hasData && !isDashboard);
     // Settings button always visible
 
     // --- Keyword Queue panel ---
+    // Only shown once the queue has been populated (after Add Listings to DB).
     const queuePanel = document.getElementById("queue-panel");
-    showIf(queuePanel, isDashboard || hasQueue);
+    showIf(queuePanel, hasQueue);
 
     // Inside queue panel: context-specific controls
     showIf(btnRefreshQueue,                              isDashboard);
     showIf(document.getElementById("queue-template-row"), isDashboard);
     showIf(document.getElementById("queue-actions-row"),  isDashboard);
-    // Mark Done remains inside queue-actions-row so it's visible on dashboard
 
     // --- Bot panel ---
+    // Only shown once the queue exists or the bot is already running.
     const botPanelEl = document.getElementById("bot-panel");
-    showIf(botPanelEl, isDashboard || botRunning || hasQueue);
+    showIf(botPanelEl, hasQueue || botRunning);
 
     // --- Page badge ---
     const badge = document.getElementById("page-badge");
@@ -1466,6 +1469,11 @@ document.addEventListener("DOMContentLoaded", () => {
         ? response.message
         : `Inserted ${inserted} rows into listing_report.`;
       setDbStatus(statusMsg, "success");
+
+      // Auto-build keyword queue from the captured sessions so the
+      // queue panel and bot panel appear immediately after insert.
+      buildKeywordQueueFromSessions();
+      applyPageContext(currentPageType);
     } catch (error) {
       setDbStatus(
         "Database insert failed: " +
