@@ -112,17 +112,13 @@
       </div>
     </div>
 
-    <!-- Add More Listings (shown when bot queue is exhausted) -->
-    <div class="add-more-panel" id="add-more-panel" style="display:none">
-      <div class="add-more-title">All listings processed — paste more to continue:</div>
-      <textarea
-        id="input-more-listings"
-        class="settings-input add-more-input"
-        placeholder="Listing IDs or Etsy URLs, one per line"
-        rows="3"
-        spellcheck="false"
-      ></textarea>
-      <button id="btn-add-more" class="btn btn-add-more">Add &amp; Resume Bot</button>
+    <!-- Bot Complete Guidance (shown when bot queue is exhausted) -->
+    <div class="bot-complete-panel" id="bot-complete-panel" style="display:none">
+      <div class="bot-complete-title">All listings processed</div>
+      <div class="bot-complete-msg">
+        Go to the next page of your Ads Dashboard to load more listings,
+        then click <strong>Add Listings to DB</strong> to save them and rebuild the queue.
+      </div>
     </div>
 
     <!-- Database Settings (collapsible) -->

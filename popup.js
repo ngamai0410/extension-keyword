@@ -1754,9 +1754,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const botProgressEl = document.getElementById("bot-progress");
   const botCurrentEl = document.getElementById("bot-current");
   const botProgressFill = document.getElementById("bot-progress-fill");
-  const addMorePanel = document.getElementById("add-more-panel");
-  const inputMoreListings = document.getElementById("input-more-listings");
-  const btnAddMore = document.getElementById("btn-add-more");
+  const botCompletePanel = document.getElementById("bot-complete-panel");
   const errorPromptPanel = document.getElementById("error-prompt-panel");
   const errorPromptMsg = document.getElementById("error-prompt-msg");
   const btnBotRetry = document.getElementById("btn-bot-retry");
@@ -1765,7 +1763,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function showErrorPrompt(listingId, errorText) {
     errorPromptMsg.textContent = `Listing ${listingId}: ${errorText}`;
     errorPromptPanel.style.display = "block";
-    addMorePanel.style.display = "none";
+    botCompletePanel.style.display = "none";
   }
 
   function hideErrorPrompt() {
@@ -1776,7 +1774,6 @@ document.addEventListener("DOMContentLoaded", () => {
     botRunning = state.active;
 
     if (state.state === "waiting_user") {
-      // Keep the bot running visually but show the prompt
       btnBotToggle.textContent = "Stop Bot";
       btnBotToggle.className = "btn btn-bot-stop";
       botStatusText.textContent = `Paused — save error on listing ${state.listingId}`;
@@ -1797,21 +1794,21 @@ document.addEventListener("DOMContentLoaded", () => {
       botStatusText.textContent = label;
       botStatusText.className = "bot-status-text running";
       botProgressEl.style.display = "block";
-      addMorePanel.style.display = "none";
+      botCompletePanel.style.display = "none";
     } else if (state.state === "complete") {
       btnBotToggle.textContent = "Start Bot";
       btnBotToggle.className = "btn btn-bot-start";
-      botStatusText.textContent = "All done — add more listings below";
+      botStatusText.textContent = "All listings processed";
       botStatusText.className = "bot-status-text complete";
       botProgressEl.style.display = "none";
-      addMorePanel.style.display = "block";
+      botCompletePanel.style.display = "block";
     } else {
       btnBotToggle.textContent = "Start Bot";
       btnBotToggle.className = "btn btn-bot-start";
       botStatusText.textContent = "Idle — click Start to run automatically";
       botStatusText.className = "bot-status-text";
       botProgressEl.style.display = "none";
-      addMorePanel.style.display = "none";
+      botCompletePanel.style.display = "none";
     }
   }
 
@@ -1861,36 +1858,7 @@ document.addEventListener("DOMContentLoaded", () => {
     botStatusText.className = "bot-status-text running";
   });
 
-  btnAddMore.addEventListener("click", () => {
-    const raw = (inputMoreListings.value || "").trim();
-    if (!raw) return;
-
-    const ids = parseListingIds(raw);
-    if (ids.length === 0) {
-      setDbStatus("No valid listing IDs found.", "error");
-      return;
-    }
-
-    const template = getKeywordUrlTemplate();
-    chrome.runtime.sendMessage(
-      { action: "QUEUE_ADD", listingIds: ids, autoStart: template.includes("{listing_id}") },
-      (res) => {
-        if (!res || !res.ok) return;
-        inputMoreListings.value = "";
-        addMorePanel.style.display = "none";
-        setDbStatus(`Added ${res.added} listings — bot resuming…`, "success");
-        // Refresh queue display
-        chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
-          keywordQueue = (r && r.queue) || keywordQueue;
-          renderKeywordQueue();
-          refreshBotProgress();
-          updateBotUI({ active: true, state: "opening", listingId: null });
-        });
-      }
-    );
-  });
-
-  function parseListingIds(raw) {
+function parseListingIds(raw) {
     return raw
       .split(/[\n,\s]+/)
       .map((s) => {

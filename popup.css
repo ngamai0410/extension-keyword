@@ -616,9 +616,9 @@ body {
   color: #fff;
 }
 
-/* --- Add More Panel --- */
+/* --- Bot Complete Panel --- */
 
-.add-more-panel {
+.bot-complete-panel {
   margin: 0 16px 4px;
   padding: 10px;
   border-radius: 6px;
@@ -626,25 +626,21 @@ body {
   background: #16281c;
 }
 
-.add-more-title {
+.bot-complete-title {
   font-size: 11px;
   font-weight: 600;
   color: #a8f2ca;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
 
-.add-more-input {
-  resize: vertical;
-  min-height: 58px;
-  margin-bottom: 6px;
+.bot-complete-msg {
+  font-size: 10px;
+  color: #7abf96;
+  line-height: 1.5;
 }
 
-.btn-add-more {
-  width: 100%;
-  background: linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%);
-  color: #fff;
-  font-size: 11px;
-  padding: 8px;
+.bot-complete-msg strong {
+  color: #a8f2ca;
 }
 
 /* --- Footer --- */
