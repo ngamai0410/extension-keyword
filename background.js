@@ -828,23 +828,6 @@ async function botSaveAndAdvance() {
   const sessions = result[STORAGE_KEY] || [];
   const rows = buildKeywordRowsFromSessions(sessions, bot.listingId);
 
-  let saveOk = false;
-  let saveMsg = "";
-
-  if (rows.length > 0) {
-    try {
-      const r = await new Promise((resolve) =>
-        handleInsertKeywordsToDb(rows, bot.connectionString, resolve)
-      );
-      saveOk = r.ok;
-      saveMsg = r.message || r.error || "";
-    } catch (e) {
-      saveMsg = String(e.message || e);
-    }
-  } else {
-    saveMsg = `No keyword data captured for listing ${bot.listingId}`;
-  }
-
   // No keyword data found — prompt user to retry or skip
   if (rows.length === 0) {
     bot.state     = "waiting_user";
@@ -852,6 +835,47 @@ async function botSaveAndAdvance() {
     bot.errorType = "no_data";
     botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
     return;
+  }
+
+  // Guard: listing must exist in listing_report before keywords can be inserted
+  try {
+    const checkResult = await neonHttpQuery(bot.connectionString, {
+      query: "SELECT COUNT(*)::int AS cnt FROM listing_report WHERE listing_id = $1",
+      params: [bot.listingId],
+    });
+    const cnt =
+      checkResult && Array.isArray(checkResult) && checkResult[0]
+        ? Number(checkResult[0].cnt)
+        : checkResult && checkResult.rows && checkResult.rows[0]
+          ? Number(checkResult.rows[0].cnt)
+          : 0;
+
+    if (cnt === 0) {
+      bot.state     = "waiting_user";
+      bot.errorMsg  = `Listing ${bot.listingId} not in listing_report yet — go to Ads Dashboard, click "Add Listings to DB", then Retry.`;
+      bot.errorType = "no_listing";
+      botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
+      return;
+    }
+  } catch (e) {
+    bot.state     = "waiting_user";
+    bot.errorMsg  = `DB check failed: ${String(e.message || e)}`;
+    bot.errorType = "db_error";
+    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
+    return;
+  }
+
+  let saveOk = false;
+  let saveMsg = "";
+
+  try {
+    const r = await new Promise((resolve) =>
+      handleInsertKeywordsToDb(rows, bot.connectionString, resolve)
+    );
+    saveOk = r.ok;
+    saveMsg = r.message || r.error || "";
+  } catch (e) {
+    saveMsg = String(e.message || e);
   }
 
   // DB / network error — prompt user to retry or skip
@@ -896,7 +920,9 @@ async function handleBotResume(decision, sendResponse) {
     await botMarkListing(bot.listingId, "pending");
     await botOpenNext();
   } else {
-    // no_data skips cleanly; db_error is flagged distinctly in the queue
+    // no_data  → "skipped"  (page genuinely had no keywords)
+    // no_listing → "error"  (listing not in DB — needs manual action)
+    // db_error → "error"   (DB/network failure)
     const skipStatus = errorType === "no_data" ? "skipped" : "error";
     await botMarkListing(bot.listingId, skipStatus);
     await chrome.storage.local.set({ [STORAGE_KEY]: [] });
