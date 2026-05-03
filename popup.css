@@ -16,8 +16,8 @@ body {
   background: #1a1a2e;
   width: 420px;
   min-height: 300px;
-  max-height: 520px;
-  overflow: hidden;
+  max-height: 600px;
+  overflow-y: auto;
 }
 
 .container {

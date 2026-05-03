@@ -9,6 +9,17 @@ const MAX_AGE_DAYS = 30;
 const STORAGE_KEY = "getify_sessions";
 const DB_CONFIG_KEY = "getify_db_config";
 
+// --- AUTO-CLEAR ON NAVIGATION ---
+// Clear captured sessions whenever the user navigates to a new page (main frame only).
+chrome.webNavigation.onCommitted.addListener(
+  (details) => {
+    if (details.frameId !== 0) return;
+    if (details.transitionType === "reload") return;
+    chrome.storage.local.set({ [STORAGE_KEY]: [] });
+  },
+  { url: [{ hostContains: "etsy.com" }] }
+);
+
 // --- MESSAGE HANDLER ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
