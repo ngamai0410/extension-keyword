@@ -647,7 +647,8 @@ const bot = {
   expandFallback: null,
   urlTemplate: null,
   connectionString: null,
-  errorMsg: null,   // populated when state === "waiting_user"
+  errorMsg: null,    // populated when state === "waiting_user"
+  errorType: null,   // "no_data" | "db_error"
 };
 
 // --- Queue helpers -------------------------------------------------------
@@ -832,16 +833,25 @@ async function botSaveAndAdvance() {
     saveMsg = `No keyword data captured for listing ${bot.listingId}`;
   }
 
-  // DB / network error: pause and ask the user what to do
-  if (rows.length > 0 && !saveOk) {
-    bot.state    = "waiting_user";
-    bot.errorMsg = saveMsg;
-    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: saveMsg });
-    return; // wait for BOT_RESUME from popup
+  // No keyword data found — prompt user to retry or skip
+  if (rows.length === 0) {
+    bot.state     = "waiting_user";
+    bot.errorMsg  = `No keyword data found for listing ${bot.listingId}`;
+    bot.errorType = "no_data";
+    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: bot.errorMsg });
+    return;
   }
 
-  // No keyword data on this page — skip silently
-  await botMarkListing(bot.listingId, rows.length === 0 ? "skipped" : "done");
+  // DB / network error — prompt user to retry or skip
+  if (!saveOk) {
+    bot.state     = "waiting_user";
+    bot.errorMsg  = saveMsg;
+    bot.errorType = "db_error";
+    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: saveMsg });
+    return;
+  }
+
+  await botMarkListing(bot.listingId, "done");
 
   botNotify({
     action: "BOT_LISTING_SAVED",
@@ -865,14 +875,18 @@ async function botSaveAndAdvance() {
 
 async function handleBotResume(decision, sendResponse) {
   sendResponse({ ok: true });
-  bot.errorMsg = null;
+  const errorType = bot.errorType || "db_error";
+  bot.errorMsg  = null;
+  bot.errorType = null;
+
   if (decision === "retry") {
     bot.state = "opening";
     await botMarkListing(bot.listingId, "pending");
     await botOpenNext();
   } else {
-    // "next" — skip this listing and move on
-    await botMarkListing(bot.listingId, "error");
+    // no_data skips cleanly; db_error is flagged distinctly in the queue
+    const skipStatus = errorType === "no_data" ? "skipped" : "error";
+    await botMarkListing(bot.listingId, skipStatus);
     await chrome.storage.local.set({ [STORAGE_KEY]: [] });
     updateBadge(0);
     await new Promise((r) => setTimeout(r, jitter(...BOT_NEXT_PAUSE)));
