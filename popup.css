@@ -574,6 +574,48 @@ body {
   width: 0%;
 }
 
+/* --- Bot Error Prompt Panel --- */
+
+.error-prompt-panel {
+  margin: 0 16px 4px;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #6b2b3d;
+  background: #3a1d24;
+}
+
+.error-prompt-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffc1cd;
+  margin-bottom: 6px;
+}
+
+.error-prompt-msg {
+  font-size: 10px;
+  color: #e09090;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.error-prompt-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-bot-retry {
+  flex: 1;
+  background: #2196F3;
+  color: #fff;
+}
+
+.btn-bot-next {
+  flex: 1;
+  background: #555577;
+  color: #fff;
+}
+
 /* --- Add More Panel --- */
 
 .add-more-panel {

@@ -1757,9 +1757,36 @@ document.addEventListener("DOMContentLoaded", () => {
   const addMorePanel = document.getElementById("add-more-panel");
   const inputMoreListings = document.getElementById("input-more-listings");
   const btnAddMore = document.getElementById("btn-add-more");
+  const errorPromptPanel = document.getElementById("error-prompt-panel");
+  const errorPromptMsg = document.getElementById("error-prompt-msg");
+  const btnBotRetry = document.getElementById("btn-bot-retry");
+  const btnBotNext = document.getElementById("btn-bot-next");
+
+  function showErrorPrompt(listingId, errorText) {
+    errorPromptMsg.textContent = `Listing ${listingId}: ${errorText}`;
+    errorPromptPanel.style.display = "block";
+    addMorePanel.style.display = "none";
+  }
+
+  function hideErrorPrompt() {
+    errorPromptPanel.style.display = "none";
+  }
 
   function updateBotUI(state) {
     botRunning = state.active;
+
+    if (state.state === "waiting_user") {
+      // Keep the bot running visually but show the prompt
+      btnBotToggle.textContent = "Stop Bot";
+      btnBotToggle.className = "btn btn-bot-stop";
+      botStatusText.textContent = `Paused — save error on listing ${state.listingId}`;
+      botStatusText.className = "bot-status-text error";
+      botProgressEl.style.display = "block";
+      showErrorPrompt(state.listingId, state.errorMsg || "Unknown error");
+      return;
+    }
+
+    hideErrorPrompt();
 
     if (state.active) {
       btnBotToggle.textContent = "Stop Bot";
@@ -1818,6 +1845,20 @@ document.addEventListener("DOMContentLoaded", () => {
     saveKeywordUrlTemplate();
     chrome.runtime.sendMessage({ action: "BOT_START", urlTemplate: template });
     updateBotUI({ active: true, state: "opening", listingId: null });
+  });
+
+  btnBotRetry.addEventListener("click", () => {
+    hideErrorPrompt();
+    chrome.runtime.sendMessage({ action: "BOT_RESUME", decision: "retry" });
+    botStatusText.textContent = "Retrying…";
+    botStatusText.className = "bot-status-text running";
+  });
+
+  btnBotNext.addEventListener("click", () => {
+    hideErrorPrompt();
+    chrome.runtime.sendMessage({ action: "BOT_RESUME", decision: "next" });
+    botStatusText.textContent = "Skipping — moving to next listing…";
+    botStatusText.className = "bot-status-text running";
   });
 
   btnAddMore.addEventListener("click", () => {
@@ -1895,12 +1936,24 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (message.action === "BOT_ERROR") {
       setDbStatus("Bot error: " + message.error, "error");
       updateBotUI({ active: false, state: "idle", listingId: null });
+    } else if (message.action === "BOT_ERROR_PROMPT") {
+      showErrorPrompt(message.listingId, message.error);
+      botRunning = true;
+      btnBotToggle.textContent = "Stop Bot";
+      btnBotToggle.className = "btn btn-bot-stop";
+      botStatusText.textContent = `Paused — save error on listing ${message.listingId}`;
+      botStatusText.className = "bot-status-text error";
+      setDbStatus("Save failed: " + message.error, "error");
     }
   });
 
   function loadBotStatus() {
     chrome.runtime.sendMessage({ action: "BOT_STATUS" }, (res) => {
-      if (res && res.bot) updateBotUI(res.bot);
+      if (!res || !res.bot) return;
+      updateBotUI(res.bot);
+      if (res.bot.state === "waiting_user") {
+        setDbStatus("Save failed: " + (res.bot.errorMsg || "Unknown error"), "error");
+      }
     });
   }
 

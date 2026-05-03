@@ -72,6 +72,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       scheduleBotSettle();
     }
     sendResponse({ ok: true });
+  } else if (message.action === "BOT_RESUME") {
+    handleBotResume(message.decision, sendResponse);
+    return true;
   }
 });
 
@@ -637,13 +640,14 @@ function jitter(min, max) {
 
 const bot = {
   active: false,
-  state: "idle",          // idle | opening | expanding | capturing | saving | complete
+  state: "idle",    // idle | opening | expanding | capturing | saving | waiting_user | complete
   listingId: null,
   tabId: null,
   settleTimer: null,
   expandFallback: null,
   urlTemplate: null,
   connectionString: null,
+  errorMsg: null,   // populated when state === "waiting_user"
 };
 
 // --- Queue helpers -------------------------------------------------------
@@ -679,7 +683,12 @@ async function handleQueueAdd(listingIds, autoStart, sendResponse) {
 // --- Bot state machine --------------------------------------------------
 
 function botPublicState() {
-  return { active: bot.active, state: bot.state, listingId: bot.listingId };
+  return {
+    active:    bot.active,
+    state:     bot.state,
+    listingId: bot.listingId,
+    errorMsg:  bot.errorMsg,
+  };
 }
 
 function botNotify(msg) {
@@ -823,9 +832,16 @@ async function botSaveAndAdvance() {
     saveMsg = `No keyword data captured for listing ${bot.listingId}`;
   }
 
-  // "skipped" = page had no keyword data (don't retry)
-  // "error"   = DB/network failure (also don't retry, but distinguishable in queue view)
-  await botMarkListing(bot.listingId, saveOk && rows.length > 0 ? "done" : rows.length === 0 ? "skipped" : "error");
+  // DB / network error: pause and ask the user what to do
+  if (rows.length > 0 && !saveOk) {
+    bot.state    = "waiting_user";
+    bot.errorMsg = saveMsg;
+    botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: saveMsg });
+    return; // wait for BOT_RESUME from popup
+  }
+
+  // No keyword data on this page — skip silently
+  await botMarkListing(bot.listingId, rows.length === 0 ? "skipped" : "done");
 
   botNotify({
     action: "BOT_LISTING_SAVED",
@@ -845,6 +861,23 @@ async function botSaveAndAdvance() {
   await new Promise((r) => setTimeout(r, jitter(...BOT_NEXT_PAUSE)));
 
   await botOpenNext();
+}
+
+async function handleBotResume(decision, sendResponse) {
+  sendResponse({ ok: true });
+  bot.errorMsg = null;
+  if (decision === "retry") {
+    bot.state = "opening";
+    await botMarkListing(bot.listingId, "pending");
+    await botOpenNext();
+  } else {
+    // "next" — skip this listing and move on
+    await botMarkListing(bot.listingId, "error");
+    await chrome.storage.local.set({ [STORAGE_KEY]: [] });
+    updateBadge(0);
+    await new Promise((r) => setTimeout(r, jitter(...BOT_NEXT_PAUSE)));
+    await botOpenNext();
+  }
 }
 
 async function botMarkListing(listingId, status) {

@@ -102,6 +102,16 @@
       </div>
     </div>
 
+    <!-- Bot Error Prompt (shown when DB save fails) -->
+    <div class="error-prompt-panel" id="error-prompt-panel" style="display:none">
+      <div class="error-prompt-title">Save failed — what should the bot do?</div>
+      <div class="error-prompt-msg" id="error-prompt-msg"></div>
+      <div class="error-prompt-actions">
+        <button id="btn-bot-retry" class="btn btn-bot-retry">Retry</button>
+        <button id="btn-bot-next" class="btn btn-bot-next">Skip &amp; Move Next</button>
+      </div>
+    </div>
+
     <!-- Add More Listings (shown when bot queue is exhausted) -->
     <div class="add-more-panel" id="add-more-panel" style="display:none">
       <div class="add-more-title">All listings processed — paste more to continue:</div>
