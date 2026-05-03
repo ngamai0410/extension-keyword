@@ -624,8 +624,16 @@ chrome.runtime.onInstalled.addListener(() => {
 // =====================================================================
 
 const QUEUE_KEY = "getify_keyword_queue_v2";
-const BOT_SETTLE_MS = 4000;   // ms after last keyword capture before saving
-const BOT_EXPAND_TIMEOUT = 8000; // ms to wait for expansion before settling anyway
+
+// Human-like timing ranges (all in ms)
+const BOT_PRE_EXPAND   = [3_000,  6_000];  // wait after page loads before clicking anything
+const BOT_SETTLE       = [6_000, 10_000];  // wait after last keyword API hit before saving
+const BOT_EXPAND_LIMIT = [14_000, 22_000]; // max time given for expansion before giving up
+const BOT_NEXT_PAUSE   = [4_000,  9_000];  // rest between closing one tab and opening the next
+
+function jitter(min, max) {
+  return Math.floor(min + Math.random() * (max - min));
+}
 
 const bot = {
   active: false,
@@ -755,7 +763,7 @@ function clearBotTimers() {
 function scheduleBotSettle() {
   if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
   if (bot.settleTimer) clearTimeout(bot.settleTimer);
-  bot.settleTimer = setTimeout(botSaveAndAdvance, BOT_SETTLE_MS);
+  bot.settleTimer = setTimeout(botSaveAndAdvance, jitter(...BOT_SETTLE));
   bot.state = "capturing";
 }
 
@@ -806,6 +814,9 @@ async function botSaveAndAdvance() {
   // Clear sessions so next listing starts fresh
   await chrome.storage.local.set({ [STORAGE_KEY]: [] });
   updateBadge(0);
+
+  // Human-like pause before moving to the next listing
+  await new Promise((r) => setTimeout(r, jitter(...BOT_NEXT_PAUSE)));
 
   await botOpenNext();
 }
@@ -899,18 +910,23 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
   bot.state = "expanding";
 
-  // Tell content script to expand the keyword table
-  chrome.tabs.sendMessage(tabId, { action: "EXPAND_KEYWORDS" }).catch(() => {
-    // Content script not ready (e.g. non-matching page) — settle directly
-    scheduleBotSettle();
-  });
+  // Human-like: pause before touching the page (simulates reading / orienting)
+  const preWait = jitter(...BOT_PRE_EXPAND);
 
-  // Fallback: if expansion signal never comes back, settle anyway
-  bot.expandFallback = setTimeout(() => {
-    if (bot.active && bot.tabId === tabId && bot.state === "expanding") {
+  setTimeout(() => {
+    if (!bot.active || bot.tabId !== tabId) return;
+
+    chrome.tabs.sendMessage(tabId, { action: "EXPAND_KEYWORDS" }).catch(() => {
       scheduleBotSettle();
-    }
-  }, BOT_EXPAND_TIMEOUT);
+    });
+
+    // Fallback: give up waiting for expansion after a randomised window
+    bot.expandFallback = setTimeout(() => {
+      if (bot.active && bot.tabId === tabId && bot.state === "expanding") {
+        scheduleBotSettle();
+      }
+    }, jitter(...BOT_EXPAND_LIMIT));
+  }, preWait);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
