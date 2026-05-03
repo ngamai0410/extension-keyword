@@ -696,6 +696,16 @@ async function botStart(urlTemplate) {
   bot.urlTemplate = urlTemplate || bot.urlTemplate || "";
   bot.connectionString = conn;
 
+  // Shuffle pending items so the access order is non-sequential
+  const queue = await queueGet();
+  const pending = queue.filter((q) => !q.status || q.status === "pending" || q.status === "error");
+  const others  = queue.filter((q) => q.status && q.status !== "pending" && q.status !== "error");
+  for (let k = pending.length - 1; k > 0; k--) {
+    const j = Math.floor(Math.random() * (k + 1));
+    [pending[k], pending[j]] = [pending[j], pending[k]];
+  }
+  await queueSave([...pending, ...others]);
+
   await botOpenNext();
 }
 
@@ -720,7 +730,11 @@ async function botOpenNext() {
     bot.active = false;
     bot.state = "complete";
     bot.listingId = null;
-    bot.tabId = null;
+    // Close the reused tab now that the queue is exhausted
+    if (bot.tabId) {
+      try { await chrome.tabs.remove(bot.tabId); } catch (_) {}
+      bot.tabId = null;
+    }
     botNotify({ action: "BOT_COMPLETE", done, total: queue.length });
     return;
   }
@@ -745,13 +759,27 @@ async function botOpenNext() {
   bot.listingId = String(item.listing_id);
 
   try {
-    const tab = await chrome.tabs.create({ url });
-    bot.tabId = tab.id;
+    if (bot.tabId) {
+      // Reuse the existing tab — just navigate it to the next listing.
+      // Etsy sees a normal navigation, not a new tab being created.
+      await chrome.tabs.update(bot.tabId, { url });
+    } else {
+      // First listing, or the tab was closed manually — open a fresh one.
+      const tab = await chrome.tabs.create({ url });
+      bot.tabId = tab.id;
+    }
     botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
   } catch (e) {
-    bot.active = false;
-    bot.state = "idle";
-    botNotify({ action: "BOT_ERROR", error: String(e.message || e) });
+    // Tab may have been closed unexpectedly — fall back to creating a new one
+    try {
+      const tab = await chrome.tabs.create({ url });
+      bot.tabId = tab.id;
+      botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
+    } catch (e2) {
+      bot.active = false;
+      bot.state = "idle";
+      botNotify({ action: "BOT_ERROR", error: String(e2.message || e2) });
+    }
   }
 }
 
@@ -805,11 +833,7 @@ async function botSaveAndAdvance() {
     message: saveMsg,
   });
 
-  const tabToClose = bot.tabId;
-  bot.tabId = null;
-  if (tabToClose) {
-    try { await chrome.tabs.remove(tabToClose); } catch (_) {}
-  }
+  // Tab is kept open and reused for the next listing (see botOpenNext)
 
   // Clear sessions so next listing starts fresh
   await chrome.storage.local.set({ [STORAGE_KEY]: [] });
@@ -931,7 +955,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (!bot.active || tabId !== bot.tabId) return;
-  // User closed the tab manually — process whatever was captured
+  // User closed the tab manually — clear it so botOpenNext opens a new one
   bot.tabId = null;
   clearBotTimers();
   setTimeout(() => {
