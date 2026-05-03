@@ -10,12 +10,21 @@ const STORAGE_KEY = "getify_sessions";
 const DB_CONFIG_KEY = "getify_db_config";
 
 // --- AUTO-CLEAR ON NAVIGATION ---
-// Clear captured sessions whenever the user navigates to a new page (main frame only).
+// Real browser navigation (link clicks, address bar, back/forward — not reload)
 chrome.webNavigation.onCommitted.addListener(
   (details) => {
     if (details.frameId !== 0) return;
     if (details.transitionType === "reload") return;
-    chrome.storage.local.set({ [STORAGE_KEY]: [] });
+    handleClearAll(() => {});
+  },
+  { url: [{ hostContains: "etsy.com" }] }
+);
+
+// SPA client-side routing (history.pushState)
+chrome.webNavigation.onHistoryStateUpdated.addListener(
+  (details) => {
+    if (details.frameId !== 0) return;
+    handleClearAll(() => {});
   },
   { url: [{ hostContains: "etsy.com" }] }
 );
@@ -57,7 +66,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     queueSave(message.queue).then(() => sendResponse({ ok: true }));
     return true;
   } else if (message.action === "QUEUE_ADD") {
-    handleQueueAdd(message.listingIds || [], message.autoStart, sendResponse);
+    handleQueueAdd(message.listingIds || [], message.urlTemplate || "", message.autoStart, sendResponse);
     return true;
   } else if (message.action === "BOT_START") {
     botStart(message.urlTemplate);
@@ -662,7 +671,7 @@ async function queueSave(queue) {
   await chrome.storage.local.set({ [QUEUE_KEY]: queue });
 }
 
-async function handleQueueAdd(listingIds, autoStart, sendResponse) {
+async function handleQueueAdd(listingIds, urlTemplate, autoStart, sendResponse) {
   const queue = await queueGet();
   const existing = new Set(queue.map((q) => String(q.listing_id)));
   let added = 0;
@@ -676,8 +685,11 @@ async function handleQueueAdd(listingIds, autoStart, sendResponse) {
   await queueSave(queue);
   sendResponse({ ok: true, added, total: queue.length });
 
-  if (autoStart && added > 0 && !bot.active && bot.urlTemplate) {
-    botStart(bot.urlTemplate);
+  // Use the template from the message; fall back to whatever the bot already knows.
+  // This ensures autoStart works even after a service worker restart (bot.urlTemplate = null).
+  const template = urlTemplate || bot.urlTemplate || "";
+  if (autoStart && added > 0 && !bot.active && template.includes("{listing_id}")) {
+    botStart(template);
   }
 }
 
@@ -1012,20 +1024,3 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }, 800);
 });
 
-// =====================================================================
-// NAVIGATION CACHE CLEARING
-// =====================================================================
-
-// Clear the cache and badge when navigating to a new URL on Etsy
-chrome.webNavigation.onBeforeNavigate.addListener((details) => {
-  if (details.frameId === 0) {
-    handleClearAll(() => {});
-  }
-}, {url: [{hostContains: 'etsy.com'}]});
-
-// Clear the cache and badge when SPA (client-side routing) navigates to a new URL on Etsy
-chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
-  if (details.frameId === 0) {
-    handleClearAll(() => {});
-  }
-}, {url: [{hostContains: 'etsy.com'}]});

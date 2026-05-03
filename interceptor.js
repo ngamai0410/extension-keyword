@@ -13,12 +13,6 @@
   // URL patterns that indicate API calls worth capturing
   // TODO: Remove the "TEST MODE" entries after verifying the extension works
   var API_PATTERNS = [
-    // --- TEST MODE (public API — remove after testing) ---
-    "search/suggest",
-    "bespoke/public",
-    "search/api",
-    "openapi/v3",
-    // --- PRODUCTION (Ads Dashboard API) ---
     "/api/v3/",
     "/ads/",
     "/advertising/",

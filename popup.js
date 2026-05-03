@@ -34,7 +34,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnMarkKeywordDone = document.getElementById("btn-mark-keyword-done");
   const btnResetKeywordQueue = document.getElementById("btn-reset-keyword-queue");
 
-  const KEYWORD_QUEUE_STORAGE_KEY = "getify_keyword_queue_v1";
   const KEYWORD_TEMPLATE_STORAGE_KEY = "getify_keyword_url_template_v1";
   const DEFAULT_KEYWORD_URL_TEMPLATE =
     "https://www.etsy.com/your/shops/me/advertising/listings/{listing_id}";
@@ -1319,12 +1318,14 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function loadKeywordUrlTemplate() {
-    const saved = localStorage.getItem(KEYWORD_TEMPLATE_STORAGE_KEY);
-    inputKeywordUrlTemplate.value = saved || DEFAULT_KEYWORD_URL_TEMPLATE;
+    chrome.storage.local.get(KEYWORD_TEMPLATE_STORAGE_KEY, (result) => {
+      inputKeywordUrlTemplate.value =
+        result[KEYWORD_TEMPLATE_STORAGE_KEY] || DEFAULT_KEYWORD_URL_TEMPLATE;
+    });
   }
 
   function saveKeywordUrlTemplate() {
-    localStorage.setItem(KEYWORD_TEMPLATE_STORAGE_KEY, getKeywordUrlTemplate());
+    chrome.storage.local.set({ [KEYWORD_TEMPLATE_STORAGE_KEY]: getKeywordUrlTemplate() });
   }
 
   // --- EXPORT CLEAN JSON ---
