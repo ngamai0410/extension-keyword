@@ -1,0 +1,122 @@
+CREATE SCHEMA "public";
+CREATE TABLE "import_batch" (
+	"batch_id" varchar(32) PRIMARY KEY,
+	"status" varchar(16) NOT NULL,
+	"file_count" integer,
+	"listing_count" integer,
+	"keyword_count" integer,
+	"progress" integer,
+	"total_files" integer,
+	"created_at" timestamp with time zone DEFAULT now(),
+	"confirmed_at" timestamp with time zone,
+	"note" text,
+	"error_message" text
+);
+CREATE TABLE "keyword_report" (
+	"id" serial PRIMARY KEY,
+	"listing_id" varchar(32) NOT NULL,
+	"keyword" text NOT NULL,
+	"no_vm" varchar(16),
+	"period" varchar(32) NOT NULL,
+	"roas" numeric(8, 2),
+	"orders" integer,
+	"spend" numeric(12, 2),
+	"revenue" numeric(12, 2),
+	"clicks" integer,
+	"click_rate" varchar(8),
+	"views" integer,
+	"import_time" timestamp with time zone,
+	"importer" varchar(64),
+	"relevant" varchar(8)
+);
+CREATE TABLE "listing_report" (
+	"id" serial PRIMARY KEY,
+	"listing_id" varchar(32) NOT NULL,
+	"title" text,
+	"no_vm" varchar(16),
+	"price" numeric(10, 2),
+	"stock" integer,
+	"category" varchar(64),
+	"lifetime_orders" integer,
+	"lifetime_revenue" numeric(12, 2),
+	"period" varchar(32) NOT NULL,
+	"views" integer,
+	"clicks" integer,
+	"orders" integer,
+	"revenue" numeric(12, 2),
+	"spend" numeric(12, 2),
+	"roas" numeric(8, 2),
+	"import_time" timestamp with time zone,
+	"importer" varchar(64)
+);
+CREATE TABLE "listings" (
+	"id" serial PRIMARY KEY,
+	"listing_id" varchar(32) NOT NULL CONSTRAINT "listings_listing_id_key" UNIQUE,
+	"title" text,
+	"category" varchar(64),
+	"no_vm" varchar(16),
+	"url" text,
+	"import_time" timestamp with time zone DEFAULT now(),
+	"importer" varchar(64)
+);
+CREATE TABLE "market_listing" (
+	"id" text PRIMARY KEY,
+	"search_tag" text,
+	"etsy_best" text,
+	"product_type" text,
+	"title" text,
+	"price" integer,
+	"original_price" integer,
+	"discount" integer,
+	"shop_name" text,
+	"rating" real,
+	"review_count" integer,
+	"badge" text,
+	"free_shipping" boolean DEFAULT false,
+	"is_ad" boolean DEFAULT false,
+	"import_date" date,
+	"tag_ranking" integer,
+	"url" text,
+	"importer" text DEFAULT 'hien_draft'
+);
+CREATE TABLE "references_engine" (
+	"listing_id" varchar(32),
+	"reference_listing_id" text,
+	"ref_rank" smallint NOT NULL,
+	"ref_title" text,
+	"ref_shop" text,
+	"ref_url" text,
+	"ref_price" integer,
+	"ref_rating" real,
+	"ref_review_count" integer,
+	"ref_tag_ranking" integer,
+	"ref_badge" text,
+	"match_method" varchar(16) DEFAULT 'category',
+	"refreshed_at" timestamp with time zone DEFAULT now(),
+	"ref_discount" integer,
+	"ref_free_shipping" boolean,
+	"ref_product_type" text,
+	"ref_import_date" date,
+	CONSTRAINT "references_engine_pkey" PRIMARY KEY("listing_id","reference_listing_id")
+);
+CREATE TABLE "scenarios_rules" (
+	"id" serial PRIMARY KEY,
+	"roas_band" varchar(32) NOT NULL,
+	"cr_level" varchar(8) NOT NULL,
+	"ctr_level" varchar(8) NOT NULL,
+	"case_name" text NOT NULL,
+	"action" varchar(32) NOT NULL,
+	"cause" text,
+	"fix_listing" text,
+	"fix_ads" text
+);
+CREATE UNIQUE INDEX "import_batch_pkey" ON "import_batch" ("batch_id");
+CREATE UNIQUE INDEX "keyword_report_pkey" ON "keyword_report" ("id");
+CREATE UNIQUE INDEX "listing_report_pkey" ON "listing_report" ("id");
+CREATE INDEX "idx_listings_listing_id" ON "listings" ("listing_id");
+CREATE UNIQUE INDEX "listings_listing_id_key" ON "listings" ("listing_id");
+CREATE UNIQUE INDEX "listings_pkey" ON "listings" ("id");
+CREATE UNIQUE INDEX "uq_listings_listing_id" ON "listings" ("listing_id");
+CREATE UNIQUE INDEX "market_listing_pkey" ON "market_listing" ("id");
+CREATE UNIQUE INDEX "references_engine_pkey" ON "references_engine" ("listing_id","reference_listing_id");
+CREATE UNIQUE INDEX "scenarios_rules_pkey" ON "scenarios_rules" ("id");
