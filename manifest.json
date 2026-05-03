@@ -9,7 +9,7 @@
       "strict_min_version": "128.0"
     }
   },
-  "permissions": ["storage", "webNavigation"],
+  "permissions": ["storage", "webNavigation", "tabs"],
   "host_permissions": [
     "https://*.neon.tech/*"
   ],
@@ -25,10 +25,16 @@
       "js": ["bridge.js"],
       "run_at": "document_start",
       "world": "ISOLATED"
+    },
+    {
+      "matches": ["*://*.etsy.com/your/shops/*/advertising/listings/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
     }
   ],
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["config.js", "background.js"]
   },
   "action": {
     "default_popup": "popup.html",

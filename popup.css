@@ -481,6 +481,114 @@ body {
   display: block;
 }
 
+/* --- Bot Panel --- */
+
+.bot-panel {
+  margin: 0 16px 4px;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #2f3a67;
+  background: #1c2042;
+}
+
+.bot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bot-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.bot-status-text {
+  margin-top: 3px;
+  font-size: 10px;
+  color: #8888aa;
+  line-height: 1.4;
+}
+
+.bot-status-text.running { color: #a8f2ca; }
+.bot-status-text.complete { color: #9ed4ff; }
+.bot-status-text.error { color: #ffc1cd; }
+
+.btn-bot-start {
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%);
+  color: #fff;
+  padding: 7px 12px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.btn-bot-stop {
+  flex: 0 0 auto;
+  background: #e74c3c;
+  color: #fff;
+  padding: 7px 12px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bot-progress {
+  margin-top: 8px;
+}
+
+.bot-current {
+  font-size: 10px;
+  color: #aeb8e0;
+  margin-bottom: 4px;
+}
+
+.progress-bar-track {
+  height: 4px;
+  background: #2a2a4a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4CAF50, #2196F3);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  width: 0%;
+}
+
+/* --- Add More Panel --- */
+
+.add-more-panel {
+  margin: 0 16px 4px;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #2f5a3a;
+  background: #16281c;
+}
+
+.add-more-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a8f2ca;
+  margin-bottom: 6px;
+}
+
+.add-more-input {
+  resize: vertical;
+  min-height: 58px;
+  margin-bottom: 6px;
+}
+
+.btn-add-more {
+  width: 100%;
+  background: linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%);
+  color: #fff;
+  font-size: 11px;
+  padding: 8px;
+}
+
 /* --- Footer --- */
 
 .footer {

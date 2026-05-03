@@ -40,7 +40,8 @@ document.addEventListener("DOMContentLoaded", () => {
     "https://www.etsy.com/your/shops/me/advertising/listings/{listing_id}";
 
   let allSessions = [];
-  let keywordQueue = loadKeywordQueue();
+  let keywordQueue = [];
+  let botRunning = false;
 
   // --- LOAD DATA ---
 
@@ -1214,18 +1215,8 @@ document.addEventListener("DOMContentLoaded", () => {
     renderKeywordQueue();
   }
 
-  function loadKeywordQueue() {
-    try {
-      const raw = localStorage.getItem(KEYWORD_QUEUE_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      return [];
-    }
-  }
-
   function saveKeywordQueue() {
-    localStorage.setItem(KEYWORD_QUEUE_STORAGE_KEY, JSON.stringify(keywordQueue));
+    chrome.runtime.sendMessage({ action: "QUEUE_SAVE", queue: keywordQueue });
   }
 
   function getKeywordUrlTemplate() {
@@ -1660,9 +1651,173 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // =====================================================================
+  // BOT UI
+  // =====================================================================
+
+  const btnBotToggle = document.getElementById("btn-bot-toggle");
+  const botStatusText = document.getElementById("bot-status-text");
+  const botProgressEl = document.getElementById("bot-progress");
+  const botCurrentEl = document.getElementById("bot-current");
+  const botProgressFill = document.getElementById("bot-progress-fill");
+  const addMorePanel = document.getElementById("add-more-panel");
+  const inputMoreListings = document.getElementById("input-more-listings");
+  const btnAddMore = document.getElementById("btn-add-more");
+
+  function updateBotUI(state) {
+    botRunning = state.active;
+
+    if (state.active) {
+      btnBotToggle.textContent = "Stop Bot";
+      btnBotToggle.className = "btn btn-bot-stop";
+      const label = state.listingId
+        ? `Running… listing ${state.listingId} (${state.state})`
+        : `Running… (${state.state})`;
+      botStatusText.textContent = label;
+      botStatusText.className = "bot-status-text running";
+      botProgressEl.style.display = "block";
+      addMorePanel.style.display = "none";
+    } else if (state.state === "complete") {
+      btnBotToggle.textContent = "Start Bot";
+      btnBotToggle.className = "btn btn-bot-start";
+      botStatusText.textContent = "All done — add more listings below";
+      botStatusText.className = "bot-status-text complete";
+      botProgressEl.style.display = "none";
+      addMorePanel.style.display = "block";
+    } else {
+      btnBotToggle.textContent = "Start Bot";
+      btnBotToggle.className = "btn btn-bot-start";
+      botStatusText.textContent = "Idle — click Start to run automatically";
+      botStatusText.className = "bot-status-text";
+      botProgressEl.style.display = "none";
+      addMorePanel.style.display = "none";
+    }
+  }
+
+  function refreshBotProgress() {
+    const total = keywordQueue.length;
+    const done = keywordQueue.filter((q) => q.status === "done").length;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    botProgressFill.style.width = pct + "%";
+  }
+
+  btnBotToggle.addEventListener("click", () => {
+    if (botRunning) {
+      chrome.runtime.sendMessage({ action: "BOT_STOP" });
+      updateBotUI({ active: false, state: "idle", listingId: null });
+      return;
+    }
+
+    const template = getKeywordUrlTemplate();
+    if (!template.includes("{listing_id}")) {
+      setDbStatus("Set the Keyword URL Template with {listing_id} first.", "error");
+      return;
+    }
+    const pending = keywordQueue.filter(
+      (q) => !q.status || q.status === "pending" || q.status === "error"
+    );
+    if (pending.length === 0) {
+      setDbStatus("No pending listings. Click Refresh to build the queue first.", "error");
+      return;
+    }
+
+    saveKeywordUrlTemplate();
+    chrome.runtime.sendMessage({ action: "BOT_START", urlTemplate: template });
+    updateBotUI({ active: true, state: "opening", listingId: null });
+  });
+
+  btnAddMore.addEventListener("click", () => {
+    const raw = (inputMoreListings.value || "").trim();
+    if (!raw) return;
+
+    const ids = parseListingIds(raw);
+    if (ids.length === 0) {
+      setDbStatus("No valid listing IDs found.", "error");
+      return;
+    }
+
+    const template = getKeywordUrlTemplate();
+    chrome.runtime.sendMessage(
+      { action: "QUEUE_ADD", listingIds: ids, autoStart: template.includes("{listing_id}") },
+      (res) => {
+        if (!res || !res.ok) return;
+        inputMoreListings.value = "";
+        addMorePanel.style.display = "none";
+        setDbStatus(`Added ${res.added} listings — bot resuming…`, "success");
+        // Refresh queue display
+        chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
+          keywordQueue = (r && r.queue) || keywordQueue;
+          renderKeywordQueue();
+          refreshBotProgress();
+          updateBotUI({ active: true, state: "opening", listingId: null });
+        });
+      }
+    );
+  });
+
+  function parseListingIds(raw) {
+    return raw
+      .split(/[\n,\s]+/)
+      .map((s) => {
+        s = s.trim();
+        const urlMatch = s.match(/\/listings\/(\d+)/);
+        if (urlMatch) return urlMatch[1];
+        if (/^\d{6,12}$/.test(s)) return s;
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  // --- Receive live updates from the background bot ---
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.action === "BOT_STATUS_UPDATE") {
+      updateBotUI(message.bot || {});
+      chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
+        keywordQueue = (r && r.queue) || keywordQueue;
+        renderKeywordQueue();
+        refreshBotProgress();
+        if (message.bot && message.bot.listingId) {
+          botCurrentEl.textContent = `Listing ${message.bot.listingId}`;
+        }
+      });
+    } else if (message.action === "BOT_COMPLETE") {
+      updateBotUI({ active: false, state: "complete", listingId: null });
+      setDbStatus(
+        `Bot complete — ${message.done}/${message.total} listings saved.`,
+        "success"
+      );
+      chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
+        keywordQueue = (r && r.queue) || keywordQueue;
+        renderKeywordQueue();
+        refreshBotProgress();
+      });
+    } else if (message.action === "BOT_LISTING_SAVED") {
+      const msg = message.ok
+        ? `Saved ${message.rows} keywords for listing ${message.listingId}`
+        : `Error on listing ${message.listingId}: ${message.message}`;
+      setDbStatus(msg, message.ok ? "success" : "error");
+      botCurrentEl.textContent = `Listing ${message.listingId} — ${message.ok ? "saved" : "error"}`;
+      refreshBotProgress();
+    } else if (message.action === "BOT_ERROR") {
+      setDbStatus("Bot error: " + message.error, "error");
+      updateBotUI({ active: false, state: "idle", listingId: null });
+    }
+  });
+
+  function loadBotStatus() {
+    chrome.runtime.sendMessage({ action: "BOT_STATUS" }, (res) => {
+      if (res && res.bot) updateBotUI(res.bot);
+    });
+  }
+
   // --- INIT ---
   loadKeywordUrlTemplate();
-  renderKeywordQueue();
+  chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
+    keywordQueue = (r && r.queue) || [];
+    renderKeywordQueue();
+    refreshBotProgress();
+  });
   loadData();
   loadDbConfig();
+  loadBotStatus();
 });

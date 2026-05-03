@@ -50,6 +50,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === "INSERT_KEYWORDS_TO_DB") {
     handleInsertKeywordsToDb(message.rows, message.connectionString, sendResponse);
     return true;
+  } else if (message.action === "QUEUE_GET") {
+    queueGet().then((q) => sendResponse({ queue: q }));
+    return true;
+  } else if (message.action === "QUEUE_SAVE") {
+    queueSave(message.queue).then(() => sendResponse({ ok: true }));
+    return true;
+  } else if (message.action === "QUEUE_ADD") {
+    handleQueueAdd(message.listingIds || [], message.autoStart, sendResponse);
+    return true;
+  } else if (message.action === "BOT_START") {
+    botStart(message.urlTemplate);
+    sendResponse({ ok: true });
+  } else if (message.action === "BOT_STOP") {
+    botStop();
+    sendResponse({ ok: true });
+  } else if (message.action === "BOT_STATUS") {
+    sendResponse({ bot: botPublicState() });
+  } else if (message.action === "EXPANSION_DONE") {
+    if (bot.active && bot.state === "expanding") {
+      scheduleBotSettle();
+    }
+    sendResponse({ ok: true });
   }
 });
 
@@ -89,9 +111,25 @@ async function handleCapture(data) {
     );
 
     await chrome.storage.local.set({ [STORAGE_KEY]: cleaned });
-
-    // Update badge count
     updateBadge(cleaned.length);
+
+    // BOT: if keyword data arrived for the current listing, reset the settle timer
+    if (bot.active && bot.listingId && parsedBody && typeof parsedBody === "object") {
+      const queries = parsedBody.queryStats || parsedBody.queries;
+      if (Array.isArray(queries) && queries.length > 0) {
+        const bodyId = String(
+          (parsedBody.listing && parsedBody.listing.listingId) ||
+            parsedBody.listingId ||
+            ""
+        );
+        const urlMatch = (data.url || "").match(/\/(?:listings|querystats)\/(\d+)/);
+        const urlId = urlMatch ? urlMatch[1] : "";
+        const matches =
+          (!bodyId || bodyId === bot.listingId) &&
+          (!urlId || urlId === bot.listingId);
+        if (matches) scheduleBotSettle();
+      }
+    }
   } catch (e) {
     console.error("[Getify] Storage write error:", e);
   }
@@ -577,6 +615,312 @@ function updateBadge(count) {
 // Reset badge on extension install/update
 chrome.runtime.onInstalled.addListener(() => {
   updateBadge(0);
+});
+
+// =====================================================================
+// BOT ORCHESTRATOR
+// Fully automated keyword harvesting:
+//   open tab → expand table → wait for API settle → save to DB → next
+// =====================================================================
+
+const QUEUE_KEY = "getify_keyword_queue_v2";
+const BOT_SETTLE_MS = 4000;   // ms after last keyword capture before saving
+const BOT_EXPAND_TIMEOUT = 8000; // ms to wait for expansion before settling anyway
+
+const bot = {
+  active: false,
+  state: "idle",          // idle | opening | expanding | capturing | saving | complete
+  listingId: null,
+  tabId: null,
+  settleTimer: null,
+  expandFallback: null,
+  urlTemplate: null,
+  connectionString: null,
+};
+
+// --- Queue helpers -------------------------------------------------------
+
+async function queueGet() {
+  const r = await chrome.storage.local.get(QUEUE_KEY);
+  return r[QUEUE_KEY] || [];
+}
+
+async function queueSave(queue) {
+  await chrome.storage.local.set({ [QUEUE_KEY]: queue });
+}
+
+async function handleQueueAdd(listingIds, autoStart, sendResponse) {
+  const queue = await queueGet();
+  const existing = new Set(queue.map((q) => String(q.listing_id)));
+  let added = 0;
+  for (const id of listingIds.map(String)) {
+    if (!existing.has(id)) {
+      queue.push({ listing_id: id, title: "", status: "pending" });
+      existing.add(id);
+      added++;
+    }
+  }
+  await queueSave(queue);
+  sendResponse({ ok: true, added, total: queue.length });
+
+  if (autoStart && added > 0 && !bot.active && bot.urlTemplate) {
+    botStart(bot.urlTemplate);
+  }
+}
+
+// --- Bot state machine --------------------------------------------------
+
+function botPublicState() {
+  return { active: bot.active, state: bot.state, listingId: bot.listingId };
+}
+
+function botNotify(msg) {
+  chrome.runtime.sendMessage(msg).catch(() => {});
+}
+
+async function botStart(urlTemplate) {
+  if (bot.active) return;
+
+  const cfgResult = await chrome.storage.local.get(DB_CONFIG_KEY);
+  const conn = ((cfgResult[DB_CONFIG_KEY] || {}).connectionString || "").trim();
+
+  bot.active = true;
+  bot.urlTemplate = urlTemplate || bot.urlTemplate || "";
+  bot.connectionString = conn;
+
+  await botOpenNext();
+}
+
+function botStop() {
+  clearBotTimers();
+  bot.active = false;
+  bot.state = "idle";
+  bot.listingId = null;
+  botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
+}
+
+async function botOpenNext() {
+  if (!bot.active) return;
+
+  const queue = await queueGet();
+  const item = queue.find(
+    (q) => !q.status || q.status === "pending" || q.status === "error"
+  );
+
+  if (!item) {
+    const done = queue.filter((q) => q.status === "done").length;
+    bot.active = false;
+    bot.state = "complete";
+    bot.listingId = null;
+    bot.tabId = null;
+    botNotify({ action: "BOT_COMPLETE", done, total: queue.length });
+    return;
+  }
+
+  if (!bot.urlTemplate || !bot.urlTemplate.includes("{listing_id}")) {
+    bot.active = false;
+    bot.state = "idle";
+    botNotify({ action: "BOT_ERROR", error: "Keyword URL template missing {listing_id}" });
+    return;
+  }
+
+  item.status = "opened";
+  item.opened_at = new Date().toISOString();
+  await queueSave(queue);
+
+  const url = bot.urlTemplate.replace(
+    /\{listing_id\}/g,
+    encodeURIComponent(item.listing_id)
+  );
+
+  bot.state = "opening";
+  bot.listingId = String(item.listing_id);
+
+  try {
+    const tab = await chrome.tabs.create({ url });
+    bot.tabId = tab.id;
+    botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
+  } catch (e) {
+    bot.active = false;
+    bot.state = "idle";
+    botNotify({ action: "BOT_ERROR", error: String(e.message || e) });
+  }
+}
+
+function clearBotTimers() {
+  if (bot.settleTimer) { clearTimeout(bot.settleTimer); bot.settleTimer = null; }
+  if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
+}
+
+function scheduleBotSettle() {
+  if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
+  if (bot.settleTimer) clearTimeout(bot.settleTimer);
+  bot.settleTimer = setTimeout(botSaveAndAdvance, BOT_SETTLE_MS);
+  bot.state = "capturing";
+}
+
+async function botSaveAndAdvance() {
+  bot.settleTimer = null;
+  if (!bot.active || !bot.listingId) return;
+
+  bot.state = "saving";
+  botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
+
+  const result = await chrome.storage.local.get(STORAGE_KEY);
+  const sessions = result[STORAGE_KEY] || [];
+  const rows = buildKeywordRowsFromSessions(sessions, bot.listingId);
+
+  let saveOk = false;
+  let saveMsg = "";
+
+  if (rows.length > 0) {
+    try {
+      const r = await new Promise((resolve) =>
+        handleInsertKeywordsToDb(rows, bot.connectionString, resolve)
+      );
+      saveOk = r.ok;
+      saveMsg = r.message || r.error || "";
+    } catch (e) {
+      saveMsg = String(e.message || e);
+    }
+  } else {
+    saveMsg = `No keyword data captured for listing ${bot.listingId}`;
+  }
+
+  await botMarkListing(bot.listingId, saveOk && rows.length > 0 ? "done" : "error");
+
+  botNotify({
+    action: "BOT_LISTING_SAVED",
+    listingId: bot.listingId,
+    rows: rows.length,
+    ok: saveOk,
+    message: saveMsg,
+  });
+
+  const tabToClose = bot.tabId;
+  bot.tabId = null;
+  if (tabToClose) {
+    try { await chrome.tabs.remove(tabToClose); } catch (_) {}
+  }
+
+  // Clear sessions so next listing starts fresh
+  await chrome.storage.local.set({ [STORAGE_KEY]: [] });
+  updateBadge(0);
+
+  await botOpenNext();
+}
+
+async function botMarkListing(listingId, status) {
+  const queue = await queueGet();
+  const item = queue.find((q) => String(q.listing_id) === String(listingId));
+  if (item) {
+    item.status = status;
+    if (status === "done") item.saved_at = new Date().toISOString();
+    await queueSave(queue);
+  }
+}
+
+// --- Keyword row builder (mirrors popup.js logic, runs in background) ---
+
+function buildKeywordRowsFromSessions(sessions, targetListingId) {
+  const rows = [];
+  const importTime = new Date().toISOString();
+  const vmName = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.VM_NAME : null;
+
+  for (const entry of sessions) {
+    const url = entry.url || "";
+    const body = entry.body;
+    if (!body || typeof body !== "object") continue;
+
+    const queries = body.queryStats || body.queries;
+    if (!Array.isArray(queries) || queries.length === 0) continue;
+
+    let sessionListingId = String(
+      (body.listing && body.listing.listingId) || body.listingId || ""
+    );
+    if (!sessionListingId) {
+      const m = url.match(/\/(?:listings|querystats)\/(\d+)/);
+      if (m) sessionListingId = m[1];
+    }
+    if (!sessionListingId) sessionListingId = targetListingId || "";
+
+    if (
+      sessionListingId &&
+      targetListingId &&
+      sessionListingId !== String(targetListingId)
+    )
+      continue;
+
+    let start = body.startDate || null;
+    let end = body.endDate || null;
+    if (!start) {
+      const m = url.match(/[?&]start_date=([^&]+)/);
+      if (m) start = decodeURIComponent(m[1]).split(",")[0].trim();
+    }
+    if (!end) {
+      const m = url.match(/[?&]end_date=([^&]+)/);
+      if (m) end = decodeURIComponent(m[1]).split(",")[0].trim();
+    }
+
+    const startFmt = start ? String(start).replace(/-/g, "/") : null;
+    const endFmt = end ? String(end).replace(/-/g, "/") : null;
+    const period =
+      startFmt && endFmt ? `${startFmt}-${endFmt}` : "custom_default";
+
+    for (const q of queries) {
+      if (!q.stemmedQuery) continue;
+      rows.push({
+        listing_id: sessionListingId,
+        keyword: q.stemmedQuery,
+        no_vm: vmName,
+        period,
+        roas: q.roas || 0,
+        orders: q.orderCount || 0,
+        spend: q.cost || 0,
+        revenue: q.revenue || 0,
+        clicks: q.clickCount || 0,
+        click_rate: q.clickRate || 0,
+        views: q.impressionCounts || 0,
+        import_time: importTime,
+        importer: "getify_bot",
+        relevant: q.isRelevant != null ? String(q.isRelevant) : null,
+      });
+    }
+  }
+
+  return rows;
+}
+
+// --- Tab lifecycle listeners --------------------------------------------
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!bot.active || tabId !== bot.tabId) return;
+  if (changeInfo.status !== "complete") return;
+
+  bot.state = "expanding";
+
+  // Tell content script to expand the keyword table
+  chrome.tabs.sendMessage(tabId, { action: "EXPAND_KEYWORDS" }).catch(() => {
+    // Content script not ready (e.g. non-matching page) — settle directly
+    scheduleBotSettle();
+  });
+
+  // Fallback: if expansion signal never comes back, settle anyway
+  bot.expandFallback = setTimeout(() => {
+    if (bot.active && bot.tabId === tabId && bot.state === "expanding") {
+      scheduleBotSettle();
+    }
+  }, BOT_EXPAND_TIMEOUT);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (!bot.active || tabId !== bot.tabId) return;
+  // User closed the tab manually — process whatever was captured
+  bot.tabId = null;
+  clearBotTimers();
+  setTimeout(() => {
+    if (bot.active && bot.listingId) botSaveAndAdvance();
+  }, 800);
 });
 
 // =====================================================================
