@@ -1531,11 +1531,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : `Inserted ${inserted} rows into keyword_report.`;
       setDbStatus(statusMsg, "success");
     } catch (error) {
-      setDbStatus(
-        "Database insert failed: " +
-          String(error && error.message ? error.message : error),
-        "error"
-      );
+      setDbStatus(String(error && error.message ? error.message : error), "error");
     } finally {
       btnAddDbKeywords.textContent = originalLabel;
       btnAddDbKeywords.disabled = allSessions.length === 0;
