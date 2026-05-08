@@ -1966,9 +1966,15 @@ document.addEventListener("DOMContentLoaded", () => {
         refreshBotProgress();
       });
     } else if (message.action === "BOT_LISTING_SAVED") {
-      const msg = message.ok
-        ? `Saved ${message.rows} keywords for listing ${message.listingId}`
-        : `Error on listing ${message.listingId}: ${message.message}`;
+      let msg;
+      if (message.ok) {
+        const parts = [];
+        if (message.keywordRows > 0) parts.push(`${message.keywordRows} keywords`);
+        if (message.listingRows > 0) parts.push(`${message.listingRows} daily rows`);
+        msg = `Saved ${parts.join(" + ")} for listing ${message.listingId}`;
+      } else {
+        msg = `Error on listing ${message.listingId}: ${message.message}`;
+      }
       setDbStatus(msg, message.ok ? "success" : "error");
       botCurrentEl.textContent = `Listing ${message.listingId} — ${message.ok ? "saved" : "error"}`;
       refreshBotProgress();

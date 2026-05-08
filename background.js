@@ -924,7 +924,8 @@ async function botSaveAndAdvance() {
   botNotify({
     action: "BOT_LISTING_SAVED",
     listingId: bot.listingId,
-    rows: keywordRows.length + dailyListingRows.length,
+    keywordRows: keywordRows.length,
+    listingRows: dailyListingRows.length,
     ok: saveOk,
     message: saveMsg,
   });
