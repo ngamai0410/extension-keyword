@@ -204,6 +204,10 @@ document.addEventListener("DOMContentLoaded", () => {
         processKeywordStats(body, result, url);
       }
 
+      if (body.listing && body.graphStats && Array.isArray(body.graphStats)) {
+        processListingDailyStats(body, result, url);
+      }
+
       if (hasAttributionShape || url.indexOf("revenue/attribution") !== -1) {
         processAttribution(body, result);
       }
@@ -248,13 +252,27 @@ document.addEventListener("DOMContentLoaded", () => {
     fillDerivedSummary(result);
 
     // Pre-build rows aligned with DB table listing_report
-    result.listing_report_rows = buildListingReportRows(result);
+    // We concatenate aggregate rows (if any) and daily rows (if any)
+    const aggregateListingRows = buildListingReportRows(result);
+    const dailyListingRows = result.listing_daily_rows || [];
+    
+    // Deduplicate daily rows just in case
+    const dailyDedupeMap = new Map();
+    for (const row of dailyListingRows) {
+      dailyDedupeMap.set(`${row.listing_id}_${row.period}`, row);
+    }
+    const deduplicatedDailyRows = Array.from(dailyDedupeMap.values());
+
+    // If we have daily rows for a listing, we might not want the aggregate row for that same listing?
+    // Usually, saving both is fine since the period differs ('YYYY/MM/DD-YYYY/MM/DD' vs 'YYYY-MM-DD').
+    result.listing_report_rows = [...aggregateListingRows, ...deduplicatedDailyRows];
 
     // Pre-build rows aligned with DB table keyword_report
     result.keyword_report_rows = buildKeywordReportRows(result);
 
     // Keep export lean and avoid duplicate row-level data.
     delete result.listings;
+    delete result.listing_daily_rows;
     delete result.keywords;
 
     return result;
@@ -403,6 +421,53 @@ document.addEventListener("DOMContentLoaded", () => {
         click_rate: q.clickRate || 0,
         views: q.impressionCounts || 0,
         relevant: q.isRelevant != null ? String(q.isRelevant) : null
+      });
+    }
+  }
+
+  function processListingDailyStats(body, result, url) {
+    if (!result.listing_daily_rows) result.listing_daily_rows = [];
+    
+    const listing = body.listing;
+    const listingIdStr = String(listing.listingId || "");
+    const importTime = result.metadata.exported_at || new Date().toISOString();
+    const vmName = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.VM_NAME : null;
+
+    for (const stat of body.graphStats) {
+      const ts = stat.timestamp > 9999999999 ? stat.timestamp : stat.timestamp * 1000;
+      const dateObj = new Date(ts);
+      const yyyy = dateObj.getFullYear();
+      const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const dd = String(dateObj.getDate()).padStart(2, '0');
+      const period = `${yyyy}-${mm}-${dd}`;
+      
+      let roasVal = stat.roas;
+      if (typeof roasVal === 'object' && roasVal !== null && roasVal.parsedValue != null) {
+        roasVal = roasVal.parsedValue;
+      }
+
+      const spendCents = stat.spentTotal || 0;
+      const revenueCents = stat.revenue || 0;
+      const priceCents = listing.priceInt || 0;
+
+      result.listing_daily_rows.push({
+        listing_id: listingIdStr,
+        title: listing.title || "",
+        no_vm: vmName,
+        price: (priceCents / 100).toFixed(2),
+        stock: listing.quantity != null ? Number(listing.quantity) : null,
+        category: listing.sectionName || null,
+        lifetime_orders: null,
+        lifetime_revenue: null,
+        period: period,
+        views: stat.impressionCount || 0,
+        clicks: stat.clickCount || 0,
+        orders: stat.conversions || 0,
+        revenue: (revenueCents / 100).toFixed(2),
+        spend: (spendCents / 100).toFixed(2),
+        roas: Number(roasVal || 0).toFixed(2),
+        import_time: importTime,
+        importer: "getify_json_daily"
       });
     }
   }
