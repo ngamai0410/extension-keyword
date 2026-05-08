@@ -669,9 +669,20 @@ function jitter(min, max) {
   return Math.floor(min + Math.random() * (max - min));
 }
 
+// Gaussian timing — values cluster around the mean instead of being uniformly spread.
+// Makes inter-action delays look like real human variance rather than a random range.
+function humanJitter(min, max) {
+  const mean = (min + max) / 2;
+  const stdDev = (max - min) / 4;
+  const u1 = Math.random() || 1e-10;
+  const u2 = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  return Math.max(min, Math.min(max * 1.5, Math.round(mean + z * stdDev)));
+}
+
 const bot = {
   active: false,
-  state: "idle",    // idle | opening | expanding | capturing | saving | waiting_user | complete
+  state: "idle",    // idle | opening | expanding | capturing | saving | waiting_user | break | complete
   listingId: null,
   tabId: null,
   settleTimer: null,
@@ -681,6 +692,8 @@ const bot = {
   connectionString: null,
   errorMsg: null,    // populated when state === "waiting_user"
   errorType: null,   // "no_data" | "db_error" | "no_listing"
+  listingsProcessed: 0,
+  nextBreakAt: null, // listing count at which the next session break fires
 };
 
 // --- Queue helpers -------------------------------------------------------
@@ -692,6 +705,28 @@ async function queueGet() {
 
 async function queueSave(queue) {
   await chrome.storage.local.set({ [QUEUE_KEY]: queue });
+}
+
+// Daily cap — limit randomised per day so it isn't a predictable fixed number
+async function getDailyStats() {
+  const today = new Date().toISOString().slice(0, 10);
+  const r = await chrome.storage.local.get("bot_daily_stats");
+  const all = r.bot_daily_stats || {};
+  if (!all[today]) {
+    all[today] = { count: 0, limit: jitter(40, 70) };
+    await chrome.storage.local.set({ bot_daily_stats: all });
+  }
+  return all[today];
+}
+
+async function incrementDailyCount() {
+  const today = new Date().toISOString().slice(0, 10);
+  const r = await chrome.storage.local.get("bot_daily_stats");
+  const all = r.bot_daily_stats || {};
+  if (!all[today]) all[today] = { count: 0, limit: jitter(40, 70) };
+  all[today].count++;
+  await chrome.storage.local.set({ bot_daily_stats: all });
+  return all[today];
 }
 
 async function handleQueueAdd(listingIds, urlTemplate, autoStart, sendResponse) {
@@ -759,6 +794,8 @@ function botStop() {
   bot.active = false;
   bot.state = "idle";
   bot.listingId = null;
+  bot.listingsProcessed = 0;
+  bot.nextBreakAt = null;
   botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
 }
 
@@ -788,6 +825,14 @@ async function botOpenNext() {
     bot.active = false;
     bot.state = "idle";
     botNotify({ action: "BOT_ERROR", error: "Keyword URL template missing {listing_id}" });
+    return;
+  }
+
+  const daily = await getDailyStats();
+  if (daily.count >= daily.limit) {
+    bot.active = false;
+    bot.state = "idle";
+    botNotify({ action: "BOT_ERROR", error: `Daily limit of ${daily.limit} listings reached. Resume tomorrow.` });
     return;
   }
 
@@ -837,7 +882,7 @@ function clearBotTimers() {
 function scheduleBotSettle() {
   if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
   if (bot.settleTimer) clearTimeout(bot.settleTimer);
-  bot.settleTimer = setTimeout(botSaveAndAdvance, jitter(...BOT_SETTLE));
+  bot.settleTimer = setTimeout(botSaveAndAdvance, humanJitter(...BOT_SETTLE));
   bot.state = "capturing";
 }
 
@@ -920,6 +965,7 @@ async function botSaveAndAdvance() {
   }
 
   await botMarkListing(bot.listingId, "done");
+  await incrementDailyCount();
 
   botNotify({
     action: "BOT_LISTING_SAVED",
@@ -936,8 +982,18 @@ async function botSaveAndAdvance() {
   await chrome.storage.local.set({ [STORAGE_KEY]: [] });
   updateBadge(0);
 
-  // Human-like pause before moving to the next listing
-  await new Promise((r) => setTimeout(r, jitter(...BOT_NEXT_PAUSE)));
+  // Session break every 8–14 listings — mimics a human stepping away
+  bot.listingsProcessed++;
+  if (bot.nextBreakAt == null) bot.nextBreakAt = jitter(8, 14);
+
+  if (bot.listingsProcessed >= bot.nextBreakAt) {
+    bot.nextBreakAt = bot.listingsProcessed + jitter(8, 14);
+    bot.state = "break";
+    botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
+    await new Promise((r) => setTimeout(r, humanJitter(3 * 60_000, 8 * 60_000)));
+  } else {
+    await new Promise((r) => setTimeout(r, humanJitter(...BOT_NEXT_PAUSE)));
+  }
 
   await botOpenNext();
 }
@@ -1121,10 +1177,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   bot.state = "expanding";
 
   // Human-like: pause before touching the page (simulates reading / orienting)
-  const preWait = jitter(...BOT_PRE_EXPAND);
+  const preWait = humanJitter(...BOT_PRE_EXPAND);
 
-  setTimeout(() => {
+  setTimeout(async () => {
     if (!bot.active || bot.tabId !== tabId) return;
+
+    // Ensure the tab is in the foreground so page events (visibility, focus) fire normally
+    try { await chrome.tabs.update(tabId, { active: true }); } catch (_) {}
 
     chrome.tabs.sendMessage(tabId, { action: "EXPAND_KEYWORDS" }).catch(() => {
       scheduleBotSettle();
