@@ -38,6 +38,46 @@
     return new Promise((r) => setTimeout(r, max === undefined ? min : humanJitter(min, max)));
   }
 
+  // Track real cursor position so trajectory simulation starts from the right place
+  const mousePos = {
+    x: Math.floor(Math.random() * (window.innerWidth  || 1200)),
+    y: Math.floor(Math.random() * (window.innerHeight || 800)),
+  };
+  document.addEventListener("mousemove", (e) => {
+    mousePos.x = e.clientX;
+    mousePos.y = e.clientY;
+  }, { passive: true });
+
+  // Move the cursor from its current position to (toX, toY) along a bezier curve.
+  // DataDome scores mouse trajectories — straight-line or zero-movement clicks are suspicious.
+  async function simulateMousePath(toX, toY) {
+    const fromX = mousePos.x;
+    const fromY = mousePos.y;
+    const dist  = Math.hypot(toX - fromX, toY - fromY);
+    if (dist < 2) return;
+
+    const steps = Math.max(6, Math.min(24, Math.floor(dist / 35)));
+    // Random control point adds a natural arc to the path
+    const cpX = (fromX + toX) / 2 + jitter(-70, 70);
+    const cpY = (fromY + toY) / 2 + jitter(-50, 50);
+
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = Math.round((1 - t) * (1 - t) * fromX + 2 * (1 - t) * t * cpX + t * t * toX);
+      const y = Math.round((1 - t) * (1 - t) * fromY + 2 * (1 - t) * t * cpY + t * t * toY);
+      document.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, cancelable: true,
+        clientX: x, clientY: y,
+        screenX: x + window.screenX,
+        screenY: y + window.screenY,
+      }));
+      await sleep(humanJitter(10, 26));
+    }
+
+    mousePos.x = toX;
+    mousePos.y = toY;
+  }
+
   // Smooth-scroll by a random amount, then pause as if reading
   async function humanScroll() {
     const delta = humanJitter(250, 550);
@@ -47,18 +87,37 @@
     await sleep(700, 1_400);
   }
 
-  // Scroll element into view before interacting — a human always sees the button first
+  // Ease-out cubic scroll to element — avoids the instant "snap" of scrollIntoView
+  // which is a strong automation signal.
   async function scrollToElement(el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    await sleep(400, 900);
+    const rect     = el.getBoundingClientRect();
+    const targetY  = window.scrollY + rect.top - Math.floor(window.innerHeight * (0.3 + Math.random() * 0.2));
+    const startY   = window.scrollY;
+    const distance = targetY - startY;
+
+    if (Math.abs(distance) > 4) {
+      const steps = humanJitter(14, 22);
+      for (let i = 1; i <= steps; i++) {
+        const t     = i / steps;
+        const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic — decelerates near target
+        window.scrollTo(0, Math.round(startY + distance * eased));
+        await sleep(humanJitter(15, 32));
+      }
+    }
+
+    await sleep(350, 800);
   }
 
-  // Dispatch a full mouse-event sequence with real viewport coordinates.
-  // btn.click() produces events with no coordinates; this looks like a genuine click.
+  // Dispatch a full mouse-event sequence with real viewport coordinates and a
+  // realistic trajectory leading up to the click.
   async function humanClick(el) {
     const rect = el.getBoundingClientRect();
-    const x = rect.left + rect.width  * (0.3 + Math.random() * 0.4);
-    const y = rect.top  + rect.height * (0.3 + Math.random() * 0.4);
+    const x = Math.round(rect.left + rect.width  * (0.3 + Math.random() * 0.4));
+    const y = Math.round(rect.top  + rect.height * (0.3 + Math.random() * 0.4));
+
+    // Move cursor to the target before pressing — zero-movement clicks are flagged
+    await simulateMousePath(x, y);
+
     const opts = {
       bubbles: true, cancelable: true,
       clientX: x, clientY: y,
@@ -70,6 +129,7 @@
     el.dispatchEvent(new MouseEvent("mousedown",  opts));
     await sleep(60, 120);
     el.dispatchEvent(new MouseEvent("mouseup",    opts));
+    await sleep(15, 45); // micro-pause between mouseup and click — matches real motor latency
     el.dispatchEvent(new MouseEvent("click",      opts));
   }
 
