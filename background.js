@@ -707,27 +707,6 @@ async function queueSave(queue) {
   await chrome.storage.local.set({ [QUEUE_KEY]: queue });
 }
 
-// Daily cap — limit randomised per day so it isn't a predictable fixed number
-async function getDailyStats() {
-  const today = new Date().toISOString().slice(0, 10);
-  const r = await chrome.storage.local.get("bot_daily_stats");
-  const all = r.bot_daily_stats || {};
-  if (!all[today]) {
-    all[today] = { count: 0, limit: jitter(40, 70) };
-    await chrome.storage.local.set({ bot_daily_stats: all });
-  }
-  return all[today];
-}
-
-async function incrementDailyCount() {
-  const today = new Date().toISOString().slice(0, 10);
-  const r = await chrome.storage.local.get("bot_daily_stats");
-  const all = r.bot_daily_stats || {};
-  if (!all[today]) all[today] = { count: 0, limit: jitter(40, 70) };
-  all[today].count++;
-  await chrome.storage.local.set({ bot_daily_stats: all });
-  return all[today];
-}
 
 async function handleQueueAdd(listingIds, urlTemplate, autoStart, sendResponse) {
   const queue = await queueGet();
@@ -825,14 +804,6 @@ async function botOpenNext() {
     bot.active = false;
     bot.state = "idle";
     botNotify({ action: "BOT_ERROR", error: "Keyword URL template missing {listing_id}" });
-    return;
-  }
-
-  const daily = await getDailyStats();
-  if (daily.count >= daily.limit) {
-    bot.active = false;
-    bot.state = "idle";
-    botNotify({ action: "BOT_ERROR", error: `Daily limit of ${daily.limit} listings reached. Resume tomorrow.` });
     return;
   }
 
@@ -965,7 +936,6 @@ async function botSaveAndAdvance() {
   }
 
   await botMarkListing(bot.listingId, "done");
-  await incrementDailyCount();
 
   botNotify({
     action: "BOT_LISTING_SAVED",
