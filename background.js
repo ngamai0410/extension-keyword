@@ -15,7 +15,7 @@ chrome.webNavigation.onCommitted.addListener(
   (details) => {
     if (details.frameId !== 0) return;
     if (details.transitionType === "reload") return;
-    handleClearAll(() => {});
+    handleClearAll(() => { });
   },
   { url: [{ hostContains: "etsy.com" }] }
 );
@@ -24,7 +24,7 @@ chrome.webNavigation.onCommitted.addListener(
 chrome.webNavigation.onHistoryStateUpdated.addListener(
   (details) => {
     if (details.frameId !== 0) return;
-    handleClearAll(() => {});
+    handleClearAll(() => { });
   },
   { url: [{ hostContains: "etsy.com" }] }
 );
@@ -131,8 +131,8 @@ async function handleCapture(data) {
       if (Array.isArray(queries) && queries.length > 0) {
         const bodyId = String(
           (parsedBody.listing && parsedBody.listing.listingId) ||
-            parsedBody.listingId ||
-            ""
+          parsedBody.listingId ||
+          ""
         );
         const urlMatch = (data.url || "").match(/\/(?:listings|querystats)\/(\d+)/);
         const urlId = urlMatch ? urlMatch[1] : "";
@@ -660,10 +660,10 @@ chrome.runtime.onInstalled.addListener(() => {
 const QUEUE_KEY = "getify_keyword_queue_v2";
 
 // Human-like timing ranges (all in ms)
-const BOT_PRE_EXPAND   = [3_000,  6_000];  // wait after page loads before clicking anything
-const BOT_SETTLE       = [6_000, 10_000];  // wait after last keyword API hit before saving
+const BOT_PRE_EXPAND = [3_000, 6_000];  // wait after page loads before clicking anything
+const BOT_SETTLE = [6_000, 10_000];  // wait after last keyword API hit before saving
 const BOT_EXPAND_LIMIT = [14_000, 22_000]; // max time given for expansion before giving up
-const BOT_NEXT_PAUSE   = [4_000,  9_000];  // rest between closing one tab and opening the next
+const BOT_NEXT_PAUSE = [4_000, 9_000];  // rest between closing one tab and opening the next
 
 function jitter(min, max) {
   return Math.floor(min + Math.random() * (max - min));
@@ -720,15 +720,15 @@ async function handleQueueAdd(listingIds, urlTemplate, autoStart, sendResponse) 
 
 function botPublicState() {
   return {
-    active:    bot.active,
-    state:     bot.state,
+    active: bot.active,
+    state: bot.state,
     listingId: bot.listingId,
-    errorMsg:  bot.errorMsg,
+    errorMsg: bot.errorMsg,
   };
 }
 
 function botNotify(msg) {
-  chrome.runtime.sendMessage(msg).catch(() => {});
+  chrome.runtime.sendMessage(msg).catch(() => { });
 }
 
 async function botStart(urlTemplate) {
@@ -744,7 +744,7 @@ async function botStart(urlTemplate) {
   // Shuffle pending items so the access order is non-sequential
   const queue = await queueGet();
   const pending = queue.filter((q) => !q.status || q.status === "pending");
-  const others  = queue.filter((q) => q.status && q.status !== "pending");
+  const others = queue.filter((q) => q.status && q.status !== "pending");
   for (let k = pending.length - 1; k > 0; k--) {
     const j = Math.floor(Math.random() * (k + 1));
     [pending[k], pending[j]] = [pending[j], pending[k]];
@@ -777,7 +777,7 @@ async function botOpenNext() {
     bot.listingId = null;
     // Close the reused tab now that the queue is exhausted
     if (bot.tabId) {
-      try { await chrome.tabs.remove(bot.tabId); } catch (_) {}
+      try { await chrome.tabs.remove(bot.tabId); } catch (_) { }
       bot.tabId = null;
     }
     botNotify({ action: "BOT_COMPLETE", done, total: queue.length });
@@ -829,9 +829,9 @@ async function botOpenNext() {
 }
 
 function clearBotTimers() {
-  if (bot.settleTimer)   { clearTimeout(bot.settleTimer);   bot.settleTimer   = null; }
-  if (bot.expandFallback){ clearTimeout(bot.expandFallback); bot.expandFallback = null; }
-  if (bot.waitingTimer)  { clearTimeout(bot.waitingTimer);  bot.waitingTimer  = null; }
+  if (bot.settleTimer) { clearTimeout(bot.settleTimer); bot.settleTimer = null; }
+  if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
+  if (bot.waitingTimer) { clearTimeout(bot.waitingTimer); bot.waitingTimer = null; }
 }
 
 function scheduleBotSettle() {
@@ -846,15 +846,15 @@ const BOT_WAITING_TIMEOUT = 60 * 60 * 1000;
 
 function enterWaitingUser(errorMsg, errorType) {
   if (bot.waitingTimer) clearTimeout(bot.waitingTimer);
-  bot.state     = "waiting_user";
-  bot.errorMsg  = errorMsg;
+  bot.state = "waiting_user";
+  bot.errorMsg = errorMsg;
   bot.errorType = errorType;
   botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: errorMsg });
 
   bot.waitingTimer = setTimeout(async () => {
     if (bot.state !== "waiting_user") return;
     const skipStatus = bot.errorType === "no_data" ? "skipped" : "error";
-    bot.errorMsg  = null;
+    bot.errorMsg = null;
     bot.errorType = null;
     bot.waitingTimer = null;
     await botMarkListing(bot.listingId, skipStatus);
@@ -873,24 +873,43 @@ async function botSaveAndAdvance() {
 
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const sessions = result[STORAGE_KEY] || [];
-  const rows = buildKeywordRowsFromSessions(sessions, bot.listingId);
+  // Build rows for both daily listings and keywords
+  const keywordRows = buildKeywordRowsFromSessions(sessions, bot.listingId);
+  const dailyListingRows = buildListingDailyRowsFromSessions(sessions, bot.listingId);
 
-  // No keyword data found — prompt user to retry or skip
-  if (rows.length === 0) {
-    enterWaitingUser(`No keyword data found for listing ${bot.listingId}`, "no_data");
+  // No data found — prompt user to retry or skip
+  if (keywordRows.length === 0 && dailyListingRows.length === 0) {
+    enterWaitingUser(`No data found for listing ${bot.listingId}`, "no_data");
     return;
   }
 
-  let saveOk = false;
+  let saveOk = true;
   let saveMsg = "";
 
   try {
-    const r = await new Promise((resolve) =>
-      handleInsertKeywordsToDb(rows, bot.connectionString, resolve)
-    );
-    saveOk = r.ok;
-    saveMsg = r.message || r.error || "Unknown database error";
+    // 1. Insert daily listing stats
+    if (dailyListingRows.length > 0) {
+      const listingRes = await new Promise((resolve) =>
+        handleInsertToDb(dailyListingRows, bot.connectionString, resolve)
+      );
+      if (!listingRes.ok) {
+        saveOk = false;
+        saveMsg = "Listing DB error: " + (listingRes.error || "Unknown");
+      }
+    }
+
+    // 2. Insert keyword stats
+    if (saveOk && keywordRows.length > 0) {
+      const kwRes = await new Promise((resolve) =>
+        handleInsertKeywordsToDb(keywordRows, bot.connectionString, resolve)
+      );
+      if (!kwRes.ok) {
+        saveOk = false;
+        saveMsg = "Keyword DB error: " + (kwRes.error || "Unknown");
+      }
+    }
   } catch (e) {
+    saveOk = false;
     saveMsg = String(e.message || e) || "Unknown database error";
   }
 
@@ -905,7 +924,7 @@ async function botSaveAndAdvance() {
   botNotify({
     action: "BOT_LISTING_SAVED",
     listingId: bot.listingId,
-    rows: rows.length,
+    rows: keywordRows.length + dailyListingRows.length,
     ok: saveOk,
     message: saveMsg,
   });
@@ -926,7 +945,7 @@ async function handleBotResume(decision, sendResponse) {
   sendResponse({ ok: true });
   if (bot.waitingTimer) { clearTimeout(bot.waitingTimer); bot.waitingTimer = null; }
   const errorType = bot.errorType || "db_error";
-  bot.errorMsg  = null;
+  bot.errorMsg = null;
   bot.errorType = null;
 
   if (decision === "retry") {
@@ -956,7 +975,72 @@ async function botMarkListing(listingId, status) {
   }
 }
 
-// --- Keyword row builder (mirrors popup.js logic, runs in background) ---
+// --- Row builders (runs in background) ---
+
+function buildListingDailyRowsFromSessions(sessions, targetListingId) {
+  const rows = [];
+  const importTime = new Date().toISOString();
+  const vmName = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.VM_NAME : null;
+
+  for (const entry of sessions) {
+    const body = entry.body;
+    if (!body || typeof body !== "object") continue;
+
+    // Check if it has graphStats and listing metadata
+    if (body.listing && body.graphStats && Array.isArray(body.graphStats)) {
+      const listing = body.listing;
+      const listingIdStr = String(listing.listingId || targetListingId || "");
+
+      if (listingIdStr && targetListingId && listingIdStr !== String(targetListingId)) continue;
+
+      for (const stat of body.graphStats) {
+        // Convert timestamp to YYYY-MM-DD
+        const ts = stat.timestamp > 9999999999 ? stat.timestamp : stat.timestamp * 1000;
+        const dateObj = new Date(ts);
+        const yyyy = dateObj.getFullYear();
+        const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const dd = String(dateObj.getDate()).padStart(2, '0');
+        const period = `${yyyy}-${mm}-${dd}`;
+
+        let roasVal = stat.roas;
+        if (typeof roasVal === 'object' && roasVal !== null && roasVal.parsedValue != null) {
+          roasVal = roasVal.parsedValue;
+        }
+
+        const spendCents = stat.spentTotal || 0;
+        const revenueCents = stat.revenue || 0;
+        const priceCents = listing.priceInt || 0;
+
+        rows.push({
+          listing_id: listingIdStr,
+          title: listing.title || "",
+          no_vm: vmName,
+          price: (priceCents / 100).toFixed(2),
+          stock: listing.quantity != null ? Number(listing.quantity) : null,
+          category: listing.sectionName || null,
+          lifetime_orders: null,
+          lifetime_revenue: null,
+          period: period,
+          views: stat.impressionCount || 0,
+          clicks: stat.clickCount || 0,
+          orders: stat.conversions || 0,
+          revenue: (revenueCents / 100).toFixed(2),
+          spend: (spendCents / 100).toFixed(2),
+          roas: Number(roasVal || 0).toFixed(2),
+          import_time: importTime,
+          importer: "getify_bot_daily"
+        });
+      }
+    }
+  }
+
+  // Deduplicate rows by period in case of multiple API calls for the same listing
+  const dedupeMap = new Map();
+  for (const row of rows) {
+    dedupeMap.set(row.period, row); // Latest data overwrites older data
+  }
+  return Array.from(dedupeMap.values());
+}
 
 function buildKeywordRowsFromSessions(sessions, targetListingId) {
   const rows = [];

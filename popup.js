@@ -199,9 +199,13 @@ document.addEventListener("DOMContentLoaded", () => {
         // "Show 50" / sort / filter fires this separate endpoint
         processProlistStats(body, listingsMap);
       }
-      
+
       if ((body && (body.queryStats || body.queries)) || url.indexOf("querystats") !== -1) {
         processKeywordStats(body, result, url);
+      }
+
+      if (body.listing && body.graphStats && Array.isArray(body.graphStats)) {
+        processListingDailyStats(body, result, url);
       }
 
       if (hasAttributionShape || url.indexOf("revenue/attribution") !== -1) {
@@ -248,13 +252,27 @@ document.addEventListener("DOMContentLoaded", () => {
     fillDerivedSummary(result);
 
     // Pre-build rows aligned with DB table listing_report
-    result.listing_report_rows = buildListingReportRows(result);
+    // We concatenate aggregate rows (if any) and daily rows (if any)
+    const aggregateListingRows = buildListingReportRows(result);
+    const dailyListingRows = result.listing_daily_rows || [];
+
+    // Deduplicate daily rows just in case
+    const dailyDedupeMap = new Map();
+    for (const row of dailyListingRows) {
+      dailyDedupeMap.set(`${row.listing_id}_${row.period}`, row);
+    }
+    const deduplicatedDailyRows = Array.from(dailyDedupeMap.values());
+
+    // If we have daily rows for a listing, we might not want the aggregate row for that same listing?
+    // Usually, saving both is fine since the period differs ('YYYY/MM/DD-YYYY/MM/DD' vs 'YYYY-MM-DD').
+    result.listing_report_rows = [...aggregateListingRows, ...deduplicatedDailyRows];
 
     // Pre-build rows aligned with DB table keyword_report
     result.keyword_report_rows = buildKeywordReportRows(result);
 
     // Keep export lean and avoid duplicate row-level data.
     delete result.listings;
+    delete result.listing_daily_rows;
     delete result.keywords;
 
     return result;
@@ -351,7 +369,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function processKeywordStats(body, result, url) {
     const queries = body && (body.queryStats || body.queries);
     if (!queries || !Array.isArray(queries)) return;
-    
+
     let listingIdStr = "";
     if (body.listing && body.listing.listingId) {
       listingIdStr = String(body.listing.listingId);
@@ -403,6 +421,53 @@ document.addEventListener("DOMContentLoaded", () => {
         click_rate: q.clickRate || 0,
         views: q.impressionCounts || 0,
         relevant: q.isRelevant != null ? String(q.isRelevant) : null
+      });
+    }
+  }
+
+  function processListingDailyStats(body, result, url) {
+    if (!result.listing_daily_rows) result.listing_daily_rows = [];
+
+    const listing = body.listing;
+    const listingIdStr = String(listing.listingId || "");
+    const importTime = result.metadata.exported_at || new Date().toISOString();
+    const vmName = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.VM_NAME : null;
+
+    for (const stat of body.graphStats) {
+      const ts = stat.timestamp > 9999999999 ? stat.timestamp : stat.timestamp * 1000;
+      const dateObj = new Date(ts);
+      const yyyy = dateObj.getFullYear();
+      const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const dd = String(dateObj.getDate()).padStart(2, '0');
+      const period = `${yyyy}-${mm}-${dd}`;
+
+      let roasVal = stat.roas;
+      if (typeof roasVal === 'object' && roasVal !== null && roasVal.parsedValue != null) {
+        roasVal = roasVal.parsedValue;
+      }
+
+      const spendCents = stat.spentTotal || 0;
+      const revenueCents = stat.revenue || 0;
+      const priceCents = listing.priceInt || 0;
+
+      result.listing_daily_rows.push({
+        listing_id: listingIdStr,
+        title: listing.title || "",
+        no_vm: vmName,
+        price: (priceCents / 100).toFixed(2),
+        stock: listing.quantity != null ? Number(listing.quantity) : null,
+        category: listing.sectionName || null,
+        lifetime_orders: null,
+        lifetime_revenue: null,
+        period: period,
+        views: stat.impressionCount || 0,
+        clicks: stat.clickCount || 0,
+        orders: stat.conversions || 0,
+        revenue: (revenueCents / 100).toFixed(2),
+        spend: (spendCents / 100).toFixed(2),
+        roas: Number(roasVal || 0).toFixed(2),
+        import_time: importTime,
+        importer: "getify_json_daily"
       });
     }
   }
@@ -517,7 +582,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Try all array-valued keys as fallback
       for (const key of Object.keys(body)) {
         if (Array.isArray(body[key]) && body[key].length > 0 &&
-            typeof body[key][0] === "object" && body[key][0] !== null) {
+          typeof body[key][0] === "object" && body[key][0] !== null) {
           const first = body[key][0];
           // Check if items look like listing objects
           if (first.listing || first.listingId || first.totalStats) {
@@ -1076,20 +1141,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function applyPageContext(pageType) {
     const isDashboard = pageType === "dashboard";
-    const isKeywords  = pageType === "keywords";
-    const hasData     = allSessions.length > 0;
-    const hasKwData   = hasKeywordData();
-    const hasQueue    = keywordQueue.length > 0;
+    const isKeywords = pageType === "keywords";
+    const hasData = allSessions.length > 0;
+    const hasKwData = hasKeywordData();
+    const hasQueue = keywordQueue.length > 0;
 
     // --- Top action buttons ---
     // Dashboard: only show Add Listings to DB as the primary action.
     // Queue and bot panels reveal themselves after a successful insert.
-    showIf(btnExportClean,   hasData && !isDashboard);
-    showIf(btnExport,        hasData && !isKeywords && !isDashboard);
-    showIf(btnExportCsv,     hasData && isDashboard && hasQueue);
-    showIf(btnAddDb,         hasData && isDashboard);
+    showIf(btnExportClean, hasData && !isDashboard);
+    showIf(btnExport, hasData && !isKeywords && !isDashboard);
+    showIf(btnExportCsv, hasData && isDashboard && hasQueue);
+    showIf(btnAddDb, hasData && isDashboard);
     showIf(btnAddDbKeywords, isKeywords && hasKwData);
-    showIf(btnClear,         hasData && !isDashboard);
+    showIf(btnClear, hasData && !isDashboard);
     // Settings button always visible
 
     // --- Keyword Queue panel ---
@@ -1098,9 +1163,9 @@ document.addEventListener("DOMContentLoaded", () => {
     showIf(queuePanel, hasQueue);
 
     // Inside queue panel: context-specific controls
-    showIf(btnRefreshQueue,                              isDashboard);
+    showIf(btnRefreshQueue, isDashboard);
     showIf(document.getElementById("queue-template-row"), isDashboard);
-    showIf(document.getElementById("queue-actions-row"),  isDashboard);
+    showIf(document.getElementById("queue-actions-row"), isDashboard);
 
     // --- Bot panel ---
     // Only shown once the queue exists or the bot is already running.
@@ -1111,10 +1176,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const badge = document.getElementById("page-badge");
     if (badge) {
       const MAP = {
-        dashboard:  ["Ads Dashboard", "dashboard"],
-        keywords:   ["Keyword Stats",  "keywords"],
-        etsy_other: ["Etsy",           "etsy"],
-        other:      ["Outside Etsy",   "other"],
+        dashboard: ["Ads Dashboard", "dashboard"],
+        keywords: ["Keyword Stats", "keywords"],
+        etsy_other: ["Etsy", "etsy"],
+        other: ["Outside Etsy", "other"],
       };
       const [label, cls] = MAP[pageType] || ["Unknown", "other"];
       badge.textContent = label;
@@ -1478,7 +1543,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       setDbStatus(
         "Database insert failed: " +
-          String(error && error.message ? error.message : error),
+        String(error && error.message ? error.message : error),
         "error"
       );
     } finally {
@@ -1694,7 +1759,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
           setSettingsStatus(
             "Connection failed: " +
-              (response && response.error ? response.error : "unknown error"),
+            (response && response.error ? response.error : "unknown error"),
             "error"
           );
         }
@@ -1864,7 +1929,7 @@ document.addEventListener("DOMContentLoaded", () => {
     botStatusText.className = "bot-status-text running";
   });
 
-function parseListingIds(raw) {
+  function parseListingIds(raw) {
     return raw
       .split(/[\n,\s]+/)
       .map((s) => {
