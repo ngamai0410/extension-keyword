@@ -681,7 +681,7 @@ function humanJitter(min, max) {
   const u1 = Math.random() || 1e-10;
   const u2 = Math.random();
   const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-  return Math.max(min, Math.min(max * 1.5, Math.round(mean + z * stdDev)));
+  return Math.max(min, Math.min(max, Math.round(mean + z * stdDev)));
 }
 
 const bot = {
@@ -1250,6 +1250,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!bot.active) await botRehydrate();
     if (!bot.active || bot.state !== "break") return;
     bot.breakUntil = null;
+    // Small extra jitter so navigation doesn't fire on the exact alarm tick — a
+    // user "returning" at sub-second precision after a multi-minute break is a
+    // signal even when the break itself is randomised.
+    await new Promise((r) => setTimeout(r, humanJitter(800, 2_500)));
+    if (!bot.active) return;
     await botOpenNext();
     return;
   }

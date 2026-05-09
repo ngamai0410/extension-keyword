@@ -31,7 +31,7 @@
     const u1 = Math.random() || 1e-10;
     const u2 = Math.random();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    return Math.max(min, Math.min(max * 1.5, Math.round(mean + z * stdDev)));
+    return Math.max(min, Math.min(max, Math.round(mean + z * stdDev)));
   }
 
   function sleep(min, max) {
@@ -47,6 +47,34 @@
     mousePos.x = e.clientX;
     mousePos.y = e.clientY;
   }, { passive: true });
+
+  // Pointer event constructor (gracefully degrades on browsers without support)
+  const PE = typeof PointerEvent !== "undefined" ? PointerEvent : null;
+
+  // Build a base pointer-event init dict matching what real Chromium emits.
+  function pointerInit(x, y, { buttons = 0, button = 0, pressure = 0 } = {}) {
+    return {
+      bubbles: true, cancelable: true,
+      clientX: x, clientY: y,
+      screenX: x + window.screenX,
+      screenY: y + window.screenY,
+      pointerType: "mouse",
+      pointerId: 1,
+      isPrimary: true,
+      button, buttons,
+      pressure,
+      width: 1, height: 1,
+    };
+  }
+
+  // Dispatch on the topmost element under the pointer — real DOM events bubble
+  // from there, not from `document`. Falls back to `document` if no hit.
+  function dispatchAtPoint(type, x, y, init, asPointer) {
+    const target = document.elementFromPoint(x, y) || document;
+    const Ctor = asPointer && PE ? PE : MouseEvent;
+    target.dispatchEvent(new Ctor(type, init));
+    return target;
+  }
 
   // Move the cursor from its current position to (toX, toY) along a bezier curve.
   // DataDome scores mouse trajectories — straight-line or zero-movement clicks are suspicious.
@@ -65,12 +93,11 @@
       const t = i / steps;
       const x = Math.round((1 - t) * (1 - t) * fromX + 2 * (1 - t) * t * cpX + t * t * toX);
       const y = Math.round((1 - t) * (1 - t) * fromY + 2 * (1 - t) * t * cpY + t * t * toY);
-      document.dispatchEvent(new MouseEvent("mousemove", {
-        bubbles: true, cancelable: true,
-        clientX: x, clientY: y,
-        screenX: x + window.screenX,
-        screenY: y + window.screenY,
-      }));
+      // Real Chromium fires pointermove → mousemove on the topmost element under the cursor.
+      // Sending only mousemove on `document` (as we did before) is a paired-event mismatch.
+      const init = pointerInit(x, y, { button: -1, buttons: 0, pressure: 0 });
+      if (PE) dispatchAtPoint("pointermove", x, y, init, true);
+      dispatchAtPoint("mousemove", x, y, init, false);
       await sleep(humanJitter(10, 26));
     }
 
@@ -141,19 +168,24 @@
     // Move cursor to the target before pressing — zero-movement clicks are flagged
     await simulateMousePath(x, y);
 
-    const opts = {
-      bubbles: true, cancelable: true,
-      clientX: x, clientY: y,
-      screenX: x + window.screenX,
-      screenY: y + window.screenY,
-    };
-    el.dispatchEvent(new MouseEvent("mouseover",  opts));
+    // Modern Chromium fires PointerEvents alongside MouseEvents and varies `buttons`
+    // across phases — hover=0, mousedown/pointerdown=1, mouseup/click=0. A handler
+    // reading `e.buttons` on `mousedown` and seeing 0 is a paired-event mismatch
+    // that doesn't occur in any real browser.
+    const hoverInit = pointerInit(x, y, { button: -1, buttons: 0, pressure: 0 });
+    const downInit  = pointerInit(x, y, { button:  0, buttons: 1, pressure: 0.5 });
+    const upInit    = pointerInit(x, y, { button:  0, buttons: 0, pressure: 0 });
+
+    if (PE) el.dispatchEvent(new PE("pointerover", hoverInit));
+    el.dispatchEvent(new MouseEvent("mouseover", hoverInit));
     await sleep(80, 180);
-    el.dispatchEvent(new MouseEvent("mousedown",  opts));
+    if (PE) el.dispatchEvent(new PE("pointerdown", downInit));
+    el.dispatchEvent(new MouseEvent("mousedown", downInit));
     await sleep(60, 120);
-    el.dispatchEvent(new MouseEvent("mouseup",    opts));
+    if (PE) el.dispatchEvent(new PE("pointerup", upInit));
+    el.dispatchEvent(new MouseEvent("mouseup", upInit));
     await sleep(15, 45); // micro-pause between mouseup and click — matches real motor latency
-    el.dispatchEvent(new MouseEvent("click",      opts));
+    el.dispatchEvent(new MouseEvent("click", upInit));
   }
 
   // With 30% probability, hover over an unrelated nearby element before the real
@@ -176,14 +208,12 @@
     const dx = Math.round(dr.left + dr.width  * (0.3 + Math.random() * 0.4));
     const dy = Math.round(dr.top  + dr.height * (0.3 + Math.random() * 0.4));
     await simulateMousePath(dx, dy);
-    const dOpts = {
-      bubbles: true, cancelable: true,
-      clientX: dx, clientY: dy,
-      screenX: dx + window.screenX, screenY: dy + window.screenY,
-    };
-    decoy.dispatchEvent(new MouseEvent("mouseover", dOpts));
+    const dInit = pointerInit(dx, dy, { button: -1, buttons: 0, pressure: 0 });
+    if (PE) decoy.dispatchEvent(new PE("pointerover", dInit));
+    decoy.dispatchEvent(new MouseEvent("mouseover", dInit));
     await sleep(150, 500);
-    decoy.dispatchEvent(new MouseEvent("mouseout", dOpts));
+    if (PE) decoy.dispatchEvent(new PE("pointerout", dInit));
+    decoy.dispatchEvent(new MouseEvent("mouseout", dInit));
     await sleep(80, 220);
   }
 
@@ -245,7 +275,16 @@
       const buttons = findExpandButtons();
       if (round > 0 && buttons.length === 0) break;
 
-      for (const btn of buttons) {
+      // Shuffle so we don't always click in DOM (top-to-bottom) order, and
+      // occasionally skip a button to revisit on the next round — a real user
+      // doesn't methodically click every "Show more" in document order.
+      const order = buttons.slice();
+      for (let k = order.length - 1; k > 0; k--) {
+        const j = Math.floor(Math.random() * (k + 1));
+        [order[k], order[j]] = [order[j], order[k]];
+      }
+      for (const btn of order) {
+        if (Math.random() < 0.1) continue; // ~10% skip — picked up next round
         try {
           await scrollToElement(btn);
           await humanClick(btn);

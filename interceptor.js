@@ -152,15 +152,18 @@
 
   var _originalXHROpen = XMLHttpRequest.prototype.open;
   var _originalXHRSend = XMLHttpRequest.prototype.send;
+  // WeakMap avoids stamping a `_xu` own property on every XHR instance, which would
+  // be visible to Object.getOwnPropertyNames(xhr) — a known automation signal.
+  var _xhrUrls = new WeakMap();
 
   XMLHttpRequest.prototype.open = function (method, url) {
-    this._xu = url;
+    _xhrUrls.set(this, url);
     return _originalXHROpen.apply(this, arguments);
   };
 
   XMLHttpRequest.prototype.send = function () {
     var self = this;
-    var url = self._xu || "";
+    var url = _xhrUrls.get(self) || "";
 
     if (shouldCapture(url)) {
       self.addEventListener("load", function () {
@@ -214,10 +217,16 @@
   }
 
   // --- PERFORMANCE.NOW() JITTER ---
-  // Automation timing is too precise — add ±2 ms noise to match real browser variance.
+  // Automation timing is too precise — add small noise to match real browser variance.
+  // Spec requires the value to be monotonically non-decreasing, so we clamp every
+  // result against the last one returned. A regression here is a strong automation tell.
   var _origPerfNow = performance.now.bind(performance);
+  var _perfLast = 0;
   performance.now = function () {
-    return _origPerfNow() + (Math.random() * 4 - 2);
+    var v = _origPerfNow() + (Math.random() * 4 - 2);
+    if (v <= _perfLast) v = _perfLast + Math.random() * 0.02;
+    _perfLast = v;
+    return v;
   };
   _spoofMap.set(performance.now, "function now() { [native code] }");
 
@@ -228,8 +237,13 @@
   var _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
   CanvasRenderingContext2D.prototype.getImageData = function (x, y, w, h) {
     var data = _origGetImageData.call(this, x, y, w, h);
-    for (var i = _canvasNoiseSeed % 4; i < data.data.length; i += 1024) {
-      data.data[i] = (data.data[i] + 1) & 0xFF;
+    var len = data.data.length;
+    if (len > 0) {
+      // Spacing scales with buffer length so favicon-sized canvases still get touched.
+      var step = Math.max(1, Math.min(1024, len >> 2));
+      for (var i = _canvasNoiseSeed % len; i < len; i += step) {
+        data.data[i] = (data.data[i] + 1) & 0xFF;
+      }
     }
     return data;
   };
@@ -241,12 +255,30 @@
   // --- AUDIO CONTEXT FINGERPRINT NOISE ---
   // Fingerprinters read oscillator output via getFloatFrequencyData.
   // Sub-threshold noise (< 0.0001 dB) prevents a stable hash across sessions.
+  // Noise must be deterministic for a given (seed, index) pair — otherwise
+  // consecutive calls on identical audio state would return different arrays,
+  // which real browsers never do.
   try {
+    // Seed must be stable per-origin per-profile; real audio fingerprints don't drift
+    // across reloads. localStorage gives us that persistence without a chrome.* call.
+    var _audioSeed;
+    try {
+      var stored = localStorage.getItem("__rdt_a");
+      _audioSeed = stored ? (stored | 0) >>> 0 : 0;
+      if (!_audioSeed) {
+        _audioSeed = (Math.random() * 0xFFFFFFFF) >>> 0;
+        localStorage.setItem("__rdt_a", String(_audioSeed));
+      }
+    } catch (_) {
+      _audioSeed = (Math.random() * 0xFFFFFFFF) >>> 0;
+    }
     var _origGetFloatFreqData = AnalyserNode.prototype.getFloatFrequencyData;
     AnalyserNode.prototype.getFloatFrequencyData = function (array) {
       _origGetFloatFreqData.call(this, array);
       for (var i = 0; i < array.length; i += 64) {
-        array[i] += (Math.random() - 0.5) * 0.0001;
+        // Deterministic LCG-style noise from (seed, index) — same input → same output.
+        var n = (_audioSeed ^ (i * 2654435761)) >>> 0;
+        array[i] += ((n / 0xFFFFFFFF) - 0.5) * 0.0001;
       }
     };
     _spoofMap.set(
@@ -268,16 +300,27 @@
       // When the iframe loads, its contentWindow becomes available
       var patchIframeFetch = function () {
         try {
-          if (el.contentWindow && el.contentWindow.fetch) {
-            var iframeOriginalFetch = el.contentWindow.fetch;
-            el.contentWindow.fetch = function () {
-              return iframeOriginalFetch.apply(this, arguments);
-            };
-            // Spoof toString on the iframe's fetch too
-            el.contentWindow.fetch.toString = function () {
-              return "function fetch() { [native code] }";
-            };
-          }
+          var w = el.contentWindow;
+          if (!w || !w.fetch) return;
+          var iframeOriginalFetch = w.fetch;
+          var iframePatchedFetch = function () {
+            return iframeOriginalFetch.apply(this, arguments);
+          };
+          w.fetch = iframePatchedFetch;
+          // Override Function.prototype.toString in the iframe instead of stamping a
+          // `toString` own property on the wrapper — the latter is enumerable via
+          // Object.getOwnPropertyNames(fetch) and is itself a bot signal.
+          // The wrapper must also short-circuit on itself, otherwise
+          // `iframe.contentWindow.Function.prototype.toString.toString()` falls through
+          // to the native toString and returns the wrapper's JS source — exposing the
+          // patch directly.
+          var iframeOrigToString = w.Function.prototype.toString;
+          var iframeNewToString = function () {
+            if (this === iframePatchedFetch) return "function fetch() { [native code] }";
+            if (this === iframeNewToString)  return "function toString() { [native code] }";
+            return iframeOrigToString.call(this);
+          };
+          w.Function.prototype.toString = iframeNewToString;
         } catch (e) {
           // Cross-origin iframes will throw — that's fine, ignore them
         }

@@ -1,2 +1,3 @@
 web-ext-artifacts/
-.claude/.bot-risk-ok
+.claude/
+bot-risk/logs/
