@@ -687,7 +687,6 @@ const bot = {
   tabId: null,
   settleTimer: null,
   expandFallback: null,
-  waitingTimer: null, // auto-skip timer when state === "waiting_user"
   urlTemplate: null,
   connectionString: null,
   errorMsg: null,    // populated when state === "waiting_user"
@@ -695,6 +694,54 @@ const bot = {
   listingsProcessed: 0,
   nextBreakAt: null, // listing count at which the next session break fires
 };
+
+// MV3 service workers are killed after ~30s idle, which destroys long setTimeouts and
+// the in-memory `bot` object. Long delays (session break, waiting_user auto-skip) use
+// chrome.alarms instead, and bot state is persisted so it can be rehydrated on wake.
+const BOT_STATE_KEY = "getify_bot_state_v1";
+const BOT_BREAK_ALARM = "getify-bot-break";
+const BOT_WAITING_ALARM = "getify-bot-waiting-skip";
+
+async function botPersist() {
+  await chrome.storage.local.set({
+    [BOT_STATE_KEY]: {
+      active: bot.active,
+      state: bot.state,
+      listingId: bot.listingId,
+      tabId: bot.tabId,
+      urlTemplate: bot.urlTemplate,
+      connectionString: bot.connectionString,
+      errorMsg: bot.errorMsg,
+      errorType: bot.errorType,
+      listingsProcessed: bot.listingsProcessed,
+      nextBreakAt: bot.nextBreakAt,
+    },
+  });
+}
+
+async function botClearPersisted() {
+  await chrome.storage.local.remove(BOT_STATE_KEY);
+}
+
+async function botRehydrate() {
+  const r = await chrome.storage.local.get(BOT_STATE_KEY);
+  const saved = r[BOT_STATE_KEY];
+  if (!saved || !saved.active) return false;
+  bot.active = saved.active;
+  bot.state = saved.state;
+  bot.listingId = saved.listingId;
+  bot.tabId = saved.tabId;
+  bot.urlTemplate = saved.urlTemplate;
+  bot.connectionString = saved.connectionString;
+  bot.errorMsg = saved.errorMsg;
+  bot.errorType = saved.errorType;
+  bot.listingsProcessed = saved.listingsProcessed || 0;
+  bot.nextBreakAt = saved.nextBreakAt;
+  return true;
+}
+
+// Top-level: rehydrate on every cold start of the service worker
+botRehydrate().catch(() => {});
 
 // --- Queue helpers -------------------------------------------------------
 
@@ -754,6 +801,7 @@ async function botStart(urlTemplate) {
   bot.active = true;
   bot.urlTemplate = urlTemplate || bot.urlTemplate || "";
   bot.connectionString = conn;
+  await botPersist();
 
   // Shuffle pending items so the access order is non-sequential
   const queue = await queueGet();
@@ -770,11 +818,14 @@ async function botStart(urlTemplate) {
 
 function botStop() {
   clearBotTimers();
+  chrome.alarms.clear(BOT_BREAK_ALARM);
+  chrome.alarms.clear(BOT_WAITING_ALARM);
   bot.active = false;
   bot.state = "idle";
   bot.listingId = null;
   bot.listingsProcessed = 0;
   bot.nextBreakAt = null;
+  botClearPersisted();
   botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
 }
 
@@ -796,6 +847,7 @@ async function botOpenNext() {
       try { await chrome.tabs.remove(bot.tabId); } catch (_) { }
       bot.tabId = null;
     }
+    await botClearPersisted();
     botNotify({ action: "BOT_COMPLETE", done, total: queue.length });
     return;
   }
@@ -803,6 +855,7 @@ async function botOpenNext() {
   if (!bot.urlTemplate || !bot.urlTemplate.includes("{listing_id}")) {
     bot.active = false;
     bot.state = "idle";
+    await botClearPersisted();
     botNotify({ action: "BOT_ERROR", error: "Keyword URL template missing {listing_id}" });
     return;
   }
@@ -829,16 +882,19 @@ async function botOpenNext() {
       const tab = await chrome.tabs.create({ url });
       bot.tabId = tab.id;
     }
+    await botPersist();
     botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
   } catch (e) {
     // Tab may have been closed unexpectedly — fall back to creating a new one
     try {
       const tab = await chrome.tabs.create({ url });
       bot.tabId = tab.id;
+      await botPersist();
       botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
     } catch (e2) {
       bot.active = false;
       bot.state = "idle";
+      await botClearPersisted();
       botNotify({ action: "BOT_ERROR", error: String(e2.message || e2) });
     }
   }
@@ -847,7 +903,6 @@ async function botOpenNext() {
 function clearBotTimers() {
   if (bot.settleTimer) { clearTimeout(bot.settleTimer); bot.settleTimer = null; }
   if (bot.expandFallback) { clearTimeout(bot.expandFallback); bot.expandFallback = null; }
-  if (bot.waitingTimer) { clearTimeout(bot.waitingTimer); bot.waitingTimer = null; }
 }
 
 function scheduleBotSettle() {
@@ -860,24 +915,15 @@ function scheduleBotSettle() {
 // Auto-skip after 60 min if popup is never reopened to answer the prompt
 const BOT_WAITING_TIMEOUT = 60 * 60 * 1000;
 
-function enterWaitingUser(errorMsg, errorType) {
-  if (bot.waitingTimer) clearTimeout(bot.waitingTimer);
+async function enterWaitingUser(errorMsg, errorType) {
   bot.state = "waiting_user";
   bot.errorMsg = errorMsg;
   bot.errorType = errorType;
+  await botPersist();
   botNotify({ action: "BOT_ERROR_PROMPT", listingId: bot.listingId, error: errorMsg });
 
-  bot.waitingTimer = setTimeout(async () => {
-    if (bot.state !== "waiting_user") return;
-    const skipStatus = bot.errorType === "no_data" ? "skipped" : "error";
-    bot.errorMsg = null;
-    bot.errorType = null;
-    bot.waitingTimer = null;
-    await botMarkListing(bot.listingId, skipStatus);
-    await chrome.storage.local.set({ [STORAGE_KEY]: [] });
-    updateBadge(0);
-    await botOpenNext();
-  }, BOT_WAITING_TIMEOUT);
+  // chrome.alarms survives service-worker termination; setTimeout would not.
+  chrome.alarms.create(BOT_WAITING_ALARM, { when: Date.now() + BOT_WAITING_TIMEOUT });
 }
 
 async function botSaveAndAdvance() {
@@ -959,24 +1005,28 @@ async function botSaveAndAdvance() {
   if (bot.listingsProcessed >= bot.nextBreakAt) {
     bot.nextBreakAt = bot.listingsProcessed + jitter(8, 14);
     bot.state = "break";
+    await botPersist();
     botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
-    await new Promise((r) => setTimeout(r, humanJitter(3 * 60_000, 8 * 60_000)));
-  } else {
-    await new Promise((r) => setTimeout(r, humanJitter(...BOT_NEXT_PAUSE)));
+    // 3–8 min break uses chrome.alarms — setTimeout would not survive worker termination.
+    const breakMs = humanJitter(3 * 60_000, 8 * 60_000);
+    chrome.alarms.create(BOT_BREAK_ALARM, { when: Date.now() + breakMs });
+    return;
   }
 
+  await new Promise((r) => setTimeout(r, humanJitter(...BOT_NEXT_PAUSE)));
   await botOpenNext();
 }
 
 async function handleBotResume(decision, sendResponse) {
   sendResponse({ ok: true });
-  if (bot.waitingTimer) { clearTimeout(bot.waitingTimer); bot.waitingTimer = null; }
+  chrome.alarms.clear(BOT_WAITING_ALARM);
   const errorType = bot.errorType || "db_error";
   bot.errorMsg = null;
   bot.errorType = null;
 
   if (decision === "retry") {
     bot.state = "opening";
+    await botPersist();
     await botMarkListing(bot.listingId, "pending");
     await botOpenNext();
   } else {
@@ -1173,8 +1223,32 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // User closed the tab manually — clear it so botOpenNext opens a new one
   bot.tabId = null;
   clearBotTimers();
+  botPersist();
   setTimeout(() => {
     if (bot.active && bot.listingId) botSaveAndAdvance();
   }, 800);
+});
+
+// Long delays (session break, waiting_user auto-skip) are scheduled via chrome.alarms
+// because setTimeout does not survive MV3 service-worker termination.
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === BOT_BREAK_ALARM) {
+    if (!bot.active) await botRehydrate();
+    if (!bot.active || bot.state !== "break") return;
+    await botOpenNext();
+    return;
+  }
+
+  if (alarm.name === BOT_WAITING_ALARM) {
+    if (!bot.active) await botRehydrate();
+    if (!bot.active || bot.state !== "waiting_user") return;
+    const skipStatus = bot.errorType === "no_data" ? "skipped" : "error";
+    bot.errorMsg = null;
+    bot.errorType = null;
+    await botMarkListing(bot.listingId, skipStatus);
+    await chrome.storage.local.set({ [STORAGE_KEY]: [] });
+    updateBadge(0);
+    await botOpenNext();
+  }
 });
 
