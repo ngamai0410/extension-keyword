@@ -78,13 +78,33 @@
     mousePos.y = toY;
   }
 
-  // Smooth-scroll by a random amount, then pause as if reading
+  // Scroll down a random amount, then pause as if reading
   async function humanScroll() {
     const delta = humanJitter(250, 550);
-    try {
-      window.scrollBy({ top: delta, behavior: "smooth" });
-    } catch (_) {}
+    try { window.scrollBy({ top: delta, behavior: "smooth" }); } catch (_) {}
     await sleep(700, 1_400);
+  }
+
+  // Scroll back up a smaller amount — humans frequently re-read content above
+  async function humanScrollUp() {
+    const delta = humanJitter(100, 280);
+    try { window.scrollBy({ top: -delta, behavior: "smooth" }); } catch (_) {}
+    await sleep(500, 1_100);
+  }
+
+  // Multi-pass reading scroll: scroll down several times with occasional
+  // back-up pauses, matching the non-linear pattern of a human reading a page.
+  async function humanReadingScroll() {
+    const passes = jitter(2, 5); // 2–4 downward passes
+    for (let i = 0; i < passes; i++) {
+      await humanScroll();
+      // ~35% chance to scroll back up before continuing — re-reading behaviour
+      if (Math.random() < 0.35) {
+        await sleep(300, 800);
+        await humanScrollUp();
+        await sleep(400, 900);
+      }
+    }
   }
 
   // Ease-out cubic scroll to element — avoids the instant "snap" of scrollIntoView
@@ -210,8 +230,9 @@
       await sleep(900, 1_600);
     }
 
-    // Scroll down once — simulates a human reading the page before acting
-    await humanScroll();
+    // Multi-pass reading scroll before touching anything — simulates a human
+    // scanning the page up and down before deciding where to click
+    await humanReadingScroll();
 
     // Small reading pause before first interaction — occasionally simulate a tab switch
     await maybeSimulateFocusBlur();
@@ -231,8 +252,12 @@
       }
 
       if (buttons.length > 0) {
-        // Scroll a bit after clicking — looks like reviewing what appeared
+        // After clicking, scroll down to review new content, then occasionally back up
         await humanScroll();
+        if (Math.random() < 0.4) {
+          await sleep(400, 800);
+          await humanScrollUp();
+        }
       }
 
       // Wait for new content to load before checking for more buttons
@@ -240,7 +265,7 @@
     }
 
     // Final scroll to the bottom to trigger any remaining lazy-loaded rows
-    await humanScroll();
+    await humanReadingScroll();
     await sleep(800, 1_500);
 
     try {
