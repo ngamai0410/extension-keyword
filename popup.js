@@ -2021,7 +2021,15 @@ document.addEventListener("DOMContentLoaded", () => {
         if (message.keywordRows > 0) parts.push(`${message.keywordRows} keywords`);
         if (message.listingRows > 0) parts.push(`${message.listingRows} daily rows`);
         if (parts.length === 0) {
-          msg = `Skipped listing ${message.listingId} — no data captured`;
+          // Distinguish between "captured nothing" and "captured keywords but
+          // listing not yet in listing_report" so the user can act on each.
+          if (message.fkSkip) {
+            msg = `Skipped listing ${message.listingId} — captured ${message.capturedKeywords} keywords but listing not yet in listing_report (run "Add Listings to DB" first)`;
+          } else if (message.capturedKeywords > 0 || message.capturedListings > 0) {
+            msg = `Skipped listing ${message.listingId} — captured ${message.capturedKeywords} kw / ${message.capturedListings} daily but nothing was saved`;
+          } else {
+            msg = `Skipped listing ${message.listingId} — no data captured`;
+          }
           statusKind = "info";
           badge = "skipped";
         } else {

@@ -947,18 +947,22 @@ async function botSaveAndAdvance() {
   const keywordRows = buildKeywordRowsFromSessions(sessions, bot.listingId);
   const dailyListingRows = buildListingDailyRowsFromSessions(sessions, bot.listingId);
 
-  // Daily listing data is the gate: it's the FK target for keyword_report and
-  // the canonical signal that this listing was actually captured. If daily is
-  // empty, skip the listing silently — no inserts, no QA prompt. Keywords
-  // alone (without daily) cannot be saved because of the FK constraint.
+  // Save whatever we actually captured. Daily and keywords are independent:
+  //   - keyword_report's FK only requires the listing_id to exist somewhere in
+  //     listing_report (from any prior run), not that we insert daily rows now
+  //   - so a captured-keywords-only run is still saveable for previously seen
+  //     listings (date-range or new-listing edge cases where graphStats is empty)
+  // If literally nothing was captured, skip silently. If only the FK precheck
+  // rejects keywords, also treat as a soft skip rather than a QA prompt.
   let saveOk = true;
   let saveMsg = "";
   let savedKeywordCount = 0;
   let savedListingCount = 0;
+  let kwFkSkip = false;
 
-  if (dailyListingRows.length > 0) {
-    try {
-      // 1. Insert daily listing stats first (keyword_report has an FK on it)
+  try {
+    // 1. Insert daily listing stats (if any)
+    if (dailyListingRows.length > 0) {
       const listingRes = await new Promise((resolve) =>
         handleInsertToDb(dailyListingRows, bot.connectionString, resolve)
       );
@@ -968,23 +972,30 @@ async function botSaveAndAdvance() {
       } else {
         savedListingCount = dailyListingRows.length;
       }
-
-      // 2. Insert keyword stats only if daily insert succeeded
-      if (saveOk && keywordRows.length > 0) {
-        const kwRes = await new Promise((resolve) =>
-          handleInsertKeywordsToDb(keywordRows, bot.connectionString, resolve)
-        );
-        if (!kwRes.ok) {
-          saveOk = false;
-          saveMsg = "Keyword DB error: " + (kwRes.error || "Unknown");
-        } else {
-          savedKeywordCount = keywordRows.length;
-        }
-      }
-    } catch (e) {
-      saveOk = false;
-      saveMsg = String(e.message || e) || "Unknown database error";
     }
+
+    // 2. Insert keyword stats (if any). FK precheck failure is a soft skip
+    //    (listing has never been captured before) — not a QA-worthy DB error.
+    if (saveOk && keywordRows.length > 0) {
+      const kwRes = await new Promise((resolve) =>
+        handleInsertKeywordsToDb(keywordRows, bot.connectionString, resolve)
+      );
+      if (!kwRes.ok) {
+        const errStr = String(kwRes.error || "");
+        if (errStr.includes("not in listing_report")) {
+          kwFkSkip = true;
+          saveMsg = errStr;
+        } else {
+          saveOk = false;
+          saveMsg = "Keyword DB error: " + (errStr || "Unknown");
+        }
+      } else {
+        savedKeywordCount = keywordRows.length;
+      }
+    }
+  } catch (e) {
+    saveOk = false;
+    saveMsg = String(e.message || e) || "Unknown database error";
   }
 
   // DB / network error — prompt user to retry or skip
@@ -993,8 +1004,10 @@ async function botSaveAndAdvance() {
     return;
   }
 
-  // No daily data → mark as skipped (queue reflects reality). Otherwise done.
-  const finalStatus = dailyListingRows.length === 0 ? "skipped" : "done";
+  // Status: done if anything was inserted; skipped otherwise (genuinely empty
+  // capture, or keyword-only run for a listing not yet in listing_report).
+  const insertedAnything = savedListingCount > 0 || savedKeywordCount > 0;
+  const finalStatus = insertedAnything ? "done" : "skipped";
   await botMarkListing(bot.listingId, finalStatus);
 
   botNotify({
@@ -1002,6 +1015,11 @@ async function botSaveAndAdvance() {
     listingId: bot.listingId,
     keywordRows: savedKeywordCount,
     listingRows: savedListingCount,
+    // Captured-but-not-saved counts so the popup can show "captured N kw but
+    // listing not yet in listing_report" instead of a misleading silent skip.
+    capturedKeywords: keywordRows.length,
+    capturedListings: dailyListingRows.length,
+    fkSkip: kwFkSkip,
     ok: saveOk,
     message: saveMsg,
   });
