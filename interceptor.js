@@ -192,6 +192,48 @@
     "function toString() { [native code] }"
   );
 
+  // --- PERFORMANCE.NOW() JITTER ---
+  // Automation timing is too precise — add ±2 ms noise to match real browser variance.
+  var _origPerfNow = performance.now.bind(performance);
+  performance.now = function () {
+    return _origPerfNow() + (Math.random() * 4 - 2);
+  };
+  _spoofMap.set(performance.now, "function now() { [native code] }");
+
+  // --- CANVAS FINGERPRINT NOISE ---
+  // DataDome draws shapes on an off-screen canvas and hashes pixel data via getImageData.
+  // Flipping 1 count per 1024 pixels makes the hash session-unique with no visible change.
+  var _canvasNoiseSeed = Math.floor(Math.random() * 256);
+  var _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+  CanvasRenderingContext2D.prototype.getImageData = function (x, y, w, h) {
+    var data = _origGetImageData.call(this, x, y, w, h);
+    for (var i = _canvasNoiseSeed % 4; i < data.data.length; i += 1024) {
+      data.data[i] = (data.data[i] + 1) & 0xFF;
+    }
+    return data;
+  };
+  _spoofMap.set(
+    CanvasRenderingContext2D.prototype.getImageData,
+    "function getImageData() { [native code] }"
+  );
+
+  // --- AUDIO CONTEXT FINGERPRINT NOISE ---
+  // Fingerprinters read oscillator output via getFloatFrequencyData.
+  // Sub-threshold noise (< 0.0001 dB) prevents a stable hash across sessions.
+  try {
+    var _origGetFloatFreqData = AnalyserNode.prototype.getFloatFrequencyData;
+    AnalyserNode.prototype.getFloatFrequencyData = function (array) {
+      _origGetFloatFreqData.call(this, array);
+      for (var i = 0; i < array.length; i += 64) {
+        array[i] += (Math.random() - 0.5) * 0.0001;
+      }
+    };
+    _spoofMap.set(
+      AnalyserNode.prototype.getFloatFrequencyData,
+      "function getFloatFrequencyData() { [native code] }"
+    );
+  } catch (_) {}
+
   // --- IFRAME DEFENSE (Phase 2) ---
   // If DataDome creates a fresh iframe to get a pristine fetch reference,
   // we patch fetch inside that iframe immediately upon creation.

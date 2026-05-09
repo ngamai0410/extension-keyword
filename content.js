@@ -115,6 +115,9 @@
     const x = Math.round(rect.left + rect.width  * (0.3 + Math.random() * 0.4));
     const y = Math.round(rect.top  + rect.height * (0.3 + Math.random() * 0.4));
 
+    // With 30% probability, hover a nearby unrelated element first — breaks the
+    // "always direct path to interactive target" pattern bots exhibit
+    await maybeFakeHover(el);
     // Move cursor to the target before pressing — zero-movement clicks are flagged
     await simulateMousePath(x, y);
 
@@ -131,6 +134,47 @@
     el.dispatchEvent(new MouseEvent("mouseup",    opts));
     await sleep(15, 45); // micro-pause between mouseup and click — matches real motor latency
     el.dispatchEvent(new MouseEvent("click",      opts));
+  }
+
+  // With 30% probability, hover over an unrelated nearby element before the real
+  // target — makes mouse paths look goal-ambiguous, matching real browsing behaviour.
+  async function maybeFakeHover(realTarget) {
+    if (Math.random() > 0.3) return;
+    const rect = realTarget.getBoundingClientRect();
+    const candidates = Array.from(
+      document.querySelectorAll("a, span, p, li, div")
+    ).filter((el) => {
+      if (el === realTarget || el.contains(realTarget) || realTarget.contains(el)) return false;
+      const r = el.getBoundingClientRect();
+      const dx = Math.abs(r.left + r.width / 2 - (rect.left + rect.width / 2));
+      const dy = Math.abs(r.top  + r.height / 2 - (rect.top  + rect.height / 2));
+      return dx < 300 && dy < 180 && r.width > 10 && r.height > 5;
+    });
+    if (candidates.length === 0) return;
+    const decoy = candidates[Math.floor(Math.random() * candidates.length)];
+    const dr = decoy.getBoundingClientRect();
+    const dx = Math.round(dr.left + dr.width  * (0.3 + Math.random() * 0.4));
+    const dy = Math.round(dr.top  + dr.height * (0.3 + Math.random() * 0.4));
+    await simulateMousePath(dx, dy);
+    const dOpts = {
+      bubbles: true, cancelable: true,
+      clientX: dx, clientY: dy,
+      screenX: dx + window.screenX, screenY: dy + window.screenY,
+    };
+    decoy.dispatchEvent(new MouseEvent("mouseover", dOpts));
+    await sleep(150, 500);
+    decoy.dispatchEvent(new MouseEvent("mouseout", dOpts));
+    await sleep(80, 220);
+  }
+
+  // With 15% probability, fire blur then focus on the window — mimics the user
+  // briefly switching tabs and coming back.
+  async function maybeSimulateFocusBlur() {
+    if (Math.random() > 0.15) return;
+    window.dispatchEvent(new Event("blur"));
+    await sleep(humanJitter(600, 2_500));
+    window.dispatchEvent(new Event("focus"));
+    await sleep(200, 600);
   }
 
   // -------------------------------------------------------------------------
@@ -169,7 +213,8 @@
     // Scroll down once — simulates a human reading the page before acting
     await humanScroll();
 
-    // Small reading pause before first interaction
+    // Small reading pause before first interaction — occasionally simulate a tab switch
+    await maybeSimulateFocusBlur();
     await sleep(1_200, 2_500);
 
     // Click expand buttons in multiple rounds
