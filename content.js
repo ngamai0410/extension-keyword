@@ -38,6 +38,26 @@
     return new Promise((r) => setTimeout(r, max === undefined ? min : humanJitter(min, max)));
   }
 
+  // Pause until the window regains focus (or the tab becomes visible). Real users
+  // don't click on tabs they're not looking at — anti-bot scripts cross-check
+  // document.hasFocus() / visibilityState against input events. Returns true if
+  // focus came back, false if the timeout expired (caller should abort gracefully).
+  async function waitForFocus(timeoutMs = 60_000) {
+    const focused = () =>
+      document.hasFocus() && document.visibilityState === "visible";
+    if (focused()) return true;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(humanJitter(400, 900));
+      if (focused()) {
+        // Brief settling pause as if the user is reorienting after switching back
+        await sleep(humanJitter(350, 900));
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Track real cursor position so trajectory simulation starts from the right place
   const mousePos = {
     x: Math.floor(Math.random() * (window.innerWidth  || 1200)),
@@ -178,7 +198,9 @@
 
     if (PE) el.dispatchEvent(new PE("pointerover", hoverInit));
     el.dispatchEvent(new MouseEvent("mouseover", hoverInit));
-    await sleep(80, 180);
+    // "Decide before pressing" pause — real users hover the cursor and verify the
+    // target before pressing. Range matches typical motor-cognition latency.
+    await sleep(120, 380);
     if (PE) el.dispatchEvent(new PE("pointerdown", downInit));
     el.dispatchEvent(new MouseEvent("mousedown", downInit));
     await sleep(60, 120);
@@ -254,6 +276,14 @@
   // -------------------------------------------------------------------------
 
   async function expandKeywords() {
+    // Don't even start if the user isn't looking at the tab — clicking while
+    // unfocused is a strong automation signal. Bail out cleanly if focus never
+    // returns; background.js's expand-fallback timer will settle on its own.
+    if (!(await waitForFocus())) {
+      try { chrome.runtime.sendMessage({ action: "EXPANSION_DONE" }); } catch (_) {}
+      return;
+    }
+
     // Wait up to ~28 s for the keyword section to appear (SPA lazy-renders)
     const deadline = Date.now() + jitter(24_000, 28_000);
     while (!keywordSectionExists() && Date.now() < deadline) {
@@ -285,11 +315,21 @@
       }
       for (const btn of order) {
         if (Math.random() < 0.1) continue; // ~10% skip — picked up next round
+        // Re-check focus before each click — if user switched tabs mid-round,
+        // pause until they come back rather than clicking into a hidden tab.
+        if (!(await waitForFocus(45_000))) return;
         try {
           await scrollToElement(btn);
           await humanClick(btn);
         } catch (_) {}
-        await sleep(400, 900);
+        // ~40% of clicks: a longer "reading" pause as if the user is reviewing
+        // the rows that just appeared. The remainder uses a short post-click
+        // gap so total expansion time stays bounded.
+        if (Math.random() < 0.4) {
+          await sleep(1_400, 3_200);
+        } else {
+          await sleep(400, 900);
+        }
       }
 
       if (buttons.length > 0) {

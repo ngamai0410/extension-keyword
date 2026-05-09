@@ -2014,16 +2014,26 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     } else if (message.action === "BOT_LISTING_SAVED") {
       let msg;
+      let statusKind = "success";
+      let badge = "saved";
       if (message.ok) {
         const parts = [];
         if (message.keywordRows > 0) parts.push(`${message.keywordRows} keywords`);
         if (message.listingRows > 0) parts.push(`${message.listingRows} daily rows`);
-        msg = `Saved ${parts.join(" + ")} for listing ${message.listingId}`;
+        if (parts.length === 0) {
+          msg = `Skipped listing ${message.listingId} — no data captured`;
+          statusKind = "info";
+          badge = "skipped";
+        } else {
+          msg = `Saved ${parts.join(" + ")} for listing ${message.listingId}`;
+        }
       } else {
         msg = `Error on listing ${message.listingId}: ${message.message}`;
+        statusKind = "error";
+        badge = "error";
       }
-      setDbStatus(msg, message.ok ? "success" : "error");
-      botCurrentEl.textContent = `Listing ${message.listingId} — ${message.ok ? "saved" : "error"}`;
+      setDbStatus(msg, statusKind);
+      botCurrentEl.textContent = `Listing ${message.listingId} — ${badge}`;
       refreshBotProgress();
     } else if (message.action === "BOT_ERROR") {
       setDbStatus("Bot error: " + message.error, "error");

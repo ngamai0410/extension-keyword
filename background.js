@@ -666,7 +666,7 @@ const QUEUE_KEY = "getify_keyword_queue_v2";
 // Human-like timing ranges (all in ms)
 const BOT_PRE_EXPAND = [3_000, 6_000];  // wait after page loads before clicking anything
 const BOT_SETTLE = [6_000, 10_000];  // wait after last keyword API hit before saving
-const BOT_EXPAND_LIMIT = [14_000, 22_000]; // max time given for expansion before giving up
+const BOT_EXPAND_LIMIT = [22_000, 34_000]; // max time given for expansion before giving up
 const BOT_NEXT_PAUSE = [4_000, 9_000];  // rest between closing one tab and opening the next
 
 function jitter(min, max) {
@@ -944,44 +944,47 @@ async function botSaveAndAdvance() {
 
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const sessions = result[STORAGE_KEY] || [];
-  // Build rows for both daily listings and keywords
   const keywordRows = buildKeywordRowsFromSessions(sessions, bot.listingId);
   const dailyListingRows = buildListingDailyRowsFromSessions(sessions, bot.listingId);
 
-  // No data found — prompt user to retry or skip
-  if (keywordRows.length === 0 && dailyListingRows.length === 0) {
-    enterWaitingUser(`No data found for listing ${bot.listingId}`, "no_data");
-    return;
-  }
-
+  // Daily listing data is the gate: it's the FK target for keyword_report and
+  // the canonical signal that this listing was actually captured. If daily is
+  // empty, skip the listing silently — no inserts, no QA prompt. Keywords
+  // alone (without daily) cannot be saved because of the FK constraint.
   let saveOk = true;
   let saveMsg = "";
+  let savedKeywordCount = 0;
+  let savedListingCount = 0;
 
-  try {
-    // 1. Insert daily listing stats
-    if (dailyListingRows.length > 0) {
+  if (dailyListingRows.length > 0) {
+    try {
+      // 1. Insert daily listing stats first (keyword_report has an FK on it)
       const listingRes = await new Promise((resolve) =>
         handleInsertToDb(dailyListingRows, bot.connectionString, resolve)
       );
       if (!listingRes.ok) {
         saveOk = false;
         saveMsg = "Listing DB error: " + (listingRes.error || "Unknown");
+      } else {
+        savedListingCount = dailyListingRows.length;
       }
-    }
 
-    // 2. Insert keyword stats
-    if (saveOk && keywordRows.length > 0) {
-      const kwRes = await new Promise((resolve) =>
-        handleInsertKeywordsToDb(keywordRows, bot.connectionString, resolve)
-      );
-      if (!kwRes.ok) {
-        saveOk = false;
-        saveMsg = "Keyword DB error: " + (kwRes.error || "Unknown");
+      // 2. Insert keyword stats only if daily insert succeeded
+      if (saveOk && keywordRows.length > 0) {
+        const kwRes = await new Promise((resolve) =>
+          handleInsertKeywordsToDb(keywordRows, bot.connectionString, resolve)
+        );
+        if (!kwRes.ok) {
+          saveOk = false;
+          saveMsg = "Keyword DB error: " + (kwRes.error || "Unknown");
+        } else {
+          savedKeywordCount = keywordRows.length;
+        }
       }
+    } catch (e) {
+      saveOk = false;
+      saveMsg = String(e.message || e) || "Unknown database error";
     }
-  } catch (e) {
-    saveOk = false;
-    saveMsg = String(e.message || e) || "Unknown database error";
   }
 
   // DB / network error — prompt user to retry or skip
@@ -990,13 +993,15 @@ async function botSaveAndAdvance() {
     return;
   }
 
-  await botMarkListing(bot.listingId, "done");
+  // No daily data → mark as skipped (queue reflects reality). Otherwise done.
+  const finalStatus = dailyListingRows.length === 0 ? "skipped" : "done";
+  await botMarkListing(bot.listingId, finalStatus);
 
   botNotify({
     action: "BOT_LISTING_SAVED",
     listingId: bot.listingId,
-    keywordRows: keywordRows.length,
-    listingRows: dailyListingRows.length,
+    keywordRows: savedKeywordCount,
+    listingRows: savedListingCount,
     ok: saveOk,
     message: saveMsg,
   });
