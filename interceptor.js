@@ -7,6 +7,22 @@
 (function () {
   "use strict";
 
+  // --- navigator.webdriver MASK ---
+  // Normal Chrome reports `false`, headless/automation reports `true`. Force `false`
+  // and make the property look like the native getter so probes that read
+  // `Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get.toString()`
+  // also see "[native code]". The getter reference is captured here and added to
+  // _spoofMap further down (after the map is created).
+  var _webdriverGetter = null;
+  try {
+    Object.defineProperty(Navigator.prototype, "webdriver", {
+      get: function () { return false; },
+      configurable: true,
+      enumerable: true,
+    });
+    _webdriverGetter = Object.getOwnPropertyDescriptor(Navigator.prototype, "webdriver").get;
+  } catch (_) {}
+
   // --- CONFIG ---
   var MSG_TYPE = "__RDT_UPD_a9f3c"; // Camouflaged as React DevTools internal update
 
@@ -191,6 +207,11 @@
     Function.prototype.toString,
     "function toString() { [native code] }"
   );
+
+  // Spoof the webdriver getter installed at the top of this IIFE
+  if (_webdriverGetter) {
+    _spoofMap.set(_webdriverGetter, "function get webdriver() { [native code] }");
+  }
 
   // --- PERFORMANCE.NOW() JITTER ---
   // Automation timing is too precise — add ±2 ms noise to match real browser variance.

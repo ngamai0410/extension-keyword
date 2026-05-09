@@ -238,8 +238,10 @@
     await maybeSimulateFocusBlur();
     await sleep(1_200, 2_500);
 
-    // Click expand buttons in multiple rounds
-    for (let round = 0; round < 6; round++) {
+    // Click expand buttons in multiple rounds — jittered count avoids a fixed
+    // "always exactly 6 expansions per listing" signature.
+    const maxRounds = jitter(4, 8);
+    for (let round = 0; round < maxRounds; round++) {
       const buttons = findExpandButtons();
       if (round > 0 && buttons.length === 0) break;
 

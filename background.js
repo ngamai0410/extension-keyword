@@ -24,6 +24,10 @@ chrome.webNavigation.onCommitted.addListener(
 chrome.webNavigation.onHistoryStateUpdated.addListener(
   (details) => {
     if (details.frameId !== 0) return;
+    // Don't wipe sessions on the bot's own tab — Etsy keyword pages use
+    // pushState (date filter, pagination) mid-capture, and clearing here would
+    // throw away the data we are about to save.
+    if (bot.active && details.tabId === bot.tabId) return;
     handleClearAll(() => { });
   },
   { url: [{ hostContains: "etsy.com" }] }
@@ -1043,7 +1047,7 @@ async function handleBotResume(decision, sendResponse) {
     await botMarkListing(bot.listingId, skipStatus);
     await chrome.storage.local.set({ [STORAGE_KEY]: [] });
     updateBadge(0);
-    await new Promise((r) => setTimeout(r, jitter(...BOT_NEXT_PAUSE)));
+    await new Promise((r) => setTimeout(r, humanJitter(...BOT_NEXT_PAUSE)));
     await botOpenNext();
   }
 }
@@ -1111,7 +1115,7 @@ function buildListingDailyRowsFromSessions(sessions, targetListingId) {
           spend: (spendCents / 100).toFixed(2),
           roas: Number(roasVal || 0).toFixed(2),
           import_time: importTime,
-          importer: "getify_bot_daily"
+          importer: vmName ? `getify_bot_daily_${vmName}` : "getify_bot_daily"
         });
       }
     }
@@ -1185,7 +1189,7 @@ function buildKeywordRowsFromSessions(sessions, targetListingId) {
         click_rate: String(q.clickRate || 0),
         views: q.impressionCounts || 0,
         import_time: importTime,
-        importer: "getify_bot",
+        importer: vmName ? `getify_bot_${vmName}` : "getify_bot",
         relevant: q.isRelevant != null ? String(q.isRelevant) : null,
       });
     }
@@ -1199,6 +1203,10 @@ function buildKeywordRowsFromSessions(sessions, targetListingId) {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!bot.active || tabId !== bot.tabId) return;
   if (changeInfo.status !== "complete") return;
+  // Only react to navigation completion when we are actively driving toward a new
+  // listing. If the bot is saving, breaking, waiting on the user, etc., late
+  // navigation events (Etsy redirects, error pages) must not reset state.
+  if (bot.state !== "opening") return;
 
   bot.state = "expanding";
 
@@ -1220,7 +1228,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       if (bot.active && bot.tabId === tabId && bot.state === "expanding") {
         scheduleBotSettle();
       }
-    }, jitter(...BOT_EXPAND_LIMIT));
+    }, humanJitter(...BOT_EXPAND_LIMIT));
   }, preWait);
 });
 
@@ -1232,7 +1240,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   botPersist();
   setTimeout(() => {
     if (bot.active && bot.listingId) botSaveAndAdvance();
-  }, 800);
+  }, humanJitter(600, 1400));
 });
 
 // Long delays (session break, waiting_user auto-skip) are scheduled via chrome.alarms
