@@ -693,6 +693,7 @@ const bot = {
   errorType: null,   // "no_data" | "db_error" | "no_listing"
   listingsProcessed: 0,
   nextBreakAt: null, // listing count at which the next session break fires
+  breakUntil: null,  // epoch ms when the current break ends (null when not in break)
 };
 
 // MV3 service workers are killed after ~30s idle, which destroys long setTimeouts and
@@ -715,6 +716,7 @@ async function botPersist() {
       errorType: bot.errorType,
       listingsProcessed: bot.listingsProcessed,
       nextBreakAt: bot.nextBreakAt,
+      breakUntil: bot.breakUntil,
     },
   });
 }
@@ -737,6 +739,7 @@ async function botRehydrate() {
   bot.errorType = saved.errorType;
   bot.listingsProcessed = saved.listingsProcessed || 0;
   bot.nextBreakAt = saved.nextBreakAt;
+  bot.breakUntil = saved.breakUntil || null;
   return true;
 }
 
@@ -785,6 +788,7 @@ function botPublicState() {
     state: bot.state,
     listingId: bot.listingId,
     errorMsg: bot.errorMsg,
+    breakUntil: bot.breakUntil,
   };
 }
 
@@ -825,6 +829,7 @@ function botStop() {
   bot.listingId = null;
   bot.listingsProcessed = 0;
   bot.nextBreakAt = null;
+  bot.breakUntil = null;
   botClearPersisted();
   botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
 }
@@ -1005,11 +1010,12 @@ async function botSaveAndAdvance() {
   if (bot.listingsProcessed >= bot.nextBreakAt) {
     bot.nextBreakAt = bot.listingsProcessed + jitter(8, 14);
     bot.state = "break";
-    await botPersist();
-    botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
     // 3–8 min break uses chrome.alarms — setTimeout would not survive worker termination.
     const breakMs = humanJitter(3 * 60_000, 8 * 60_000);
-    chrome.alarms.create(BOT_BREAK_ALARM, { when: Date.now() + breakMs });
+    bot.breakUntil = Date.now() + breakMs;
+    await botPersist();
+    botNotify({ action: "BOT_STATUS_UPDATE", bot: botPublicState() });
+    chrome.alarms.create(BOT_BREAK_ALARM, { when: bot.breakUntil });
     return;
   }
 
@@ -1235,6 +1241,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === BOT_BREAK_ALARM) {
     if (!bot.active) await botRehydrate();
     if (!bot.active || bot.state !== "break") return;
+    bot.breakUntil = null;
     await botOpenNext();
     return;
   }

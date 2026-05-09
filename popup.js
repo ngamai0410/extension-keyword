@@ -1841,10 +1841,41 @@ document.addEventListener("DOMContentLoaded", () => {
     errorPromptPanel.style.display = "none";
   }
 
+  let breakTickerId = null;
+  let lastBotState = null;
+
+  function stopBreakTicker() {
+    if (breakTickerId != null) {
+      clearInterval(breakTickerId);
+      breakTickerId = null;
+    }
+  }
+
+  function formatBreakRemaining(breakUntil) {
+    const ms = Math.max(0, breakUntil - Date.now());
+    const totalSec = Math.ceil(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  function renderRunningLabel(state) {
+    if (state.state === "break" && state.breakUntil) {
+      const remaining = formatBreakRemaining(state.breakUntil);
+      botStatusText.textContent = `Running… (break — ${remaining} left)`;
+      return;
+    }
+    botStatusText.textContent = state.listingId
+      ? `Running… listing ${state.listingId} (${state.state})`
+      : `Running… (${state.state})`;
+  }
+
   function updateBotUI(state) {
     botRunning = state.active;
+    lastBotState = state;
 
     if (state.state === "waiting_user") {
+      stopBreakTicker();
       btnBotToggle.textContent = "Stop Bot";
       btnBotToggle.className = "btn btn-bot-stop";
       botStatusText.textContent = `Paused — save error on listing ${state.listingId}`;
@@ -1859,14 +1890,29 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.active) {
       btnBotToggle.textContent = "Stop Bot";
       btnBotToggle.className = "btn btn-bot-stop";
-      const label = state.listingId
-        ? `Running… listing ${state.listingId} (${state.state})`
-        : `Running… (${state.state})`;
-      botStatusText.textContent = label;
+      renderRunningLabel(state);
       botStatusText.className = "bot-status-text running";
       botProgressEl.style.display = "block";
       botCompletePanel.style.display = "none";
+
+      if (state.state === "break" && state.breakUntil) {
+        if (breakTickerId == null) {
+          breakTickerId = setInterval(() => {
+            if (!lastBotState || lastBotState.state !== "break" || !lastBotState.breakUntil) {
+              stopBreakTicker();
+              return;
+            }
+            renderRunningLabel(lastBotState);
+            if (Date.now() >= lastBotState.breakUntil) {
+              stopBreakTicker();
+            }
+          }, 1000);
+        }
+      } else {
+        stopBreakTicker();
+      }
     } else if (state.state === "complete") {
+      stopBreakTicker();
       btnBotToggle.textContent = "Start Bot";
       btnBotToggle.className = "btn btn-bot-start";
       botStatusText.textContent = "All listings processed";
@@ -1874,6 +1920,7 @@ document.addEventListener("DOMContentLoaded", () => {
       botProgressEl.style.display = "none";
       botCompletePanel.style.display = "block";
     } else {
+      stopBreakTicker();
       btnBotToggle.textContent = "Start Bot";
       btnBotToggle.className = "btn btn-bot-start";
       botStatusText.textContent = "Idle — click Start to run automatically";
