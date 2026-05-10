@@ -233,7 +233,21 @@
   // --- CANVAS FINGERPRINT NOISE ---
   // DataDome draws shapes on an off-screen canvas and hashes pixel data via getImageData.
   // Flipping 1 count per 1024 pixels makes the hash session-unique with no visible change.
-  var _canvasNoiseSeed = Math.floor(Math.random() * 256);
+  // Seed must persist across reloads — real devices have a perfectly stable canvas
+  // hash, and a hash that drifts on every page load is itself the bot signal we
+  // were trying to avoid. Mirror the audio-seed persistence pattern.
+  var _canvasNoiseSeed;
+  try {
+    var _canvasKey = "eu_pref_c1";
+    var _storedCanvas = localStorage.getItem(_canvasKey);
+    _canvasNoiseSeed = _storedCanvas != null ? (parseInt(_storedCanvas, 10) & 0xFF) : NaN;
+    if (!Number.isFinite(_canvasNoiseSeed)) {
+      _canvasNoiseSeed = Math.floor(Math.random() * 256);
+      localStorage.setItem(_canvasKey, String(_canvasNoiseSeed));
+    }
+  } catch (_) {
+    _canvasNoiseSeed = Math.floor(Math.random() * 256);
+  }
   var _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
   CanvasRenderingContext2D.prototype.getImageData = function (x, y, w, h) {
     var data = _origGetImageData.call(this, x, y, w, h);
@@ -261,13 +275,16 @@
   try {
     // Seed must be stable per-origin per-profile; real audio fingerprints don't drift
     // across reloads. localStorage gives us that persistence without a chrome.* call.
+    // Storage key avoids the bot-distinctive __rdt_* / __react_* / dunder
+    // patterns that anti-bot scripts probe for; mimics a generic app-pref key.
     var _audioSeed;
+    var _audioKey = "eu_pref_a1";
     try {
-      var stored = localStorage.getItem("__rdt_a");
+      var stored = localStorage.getItem(_audioKey);
       _audioSeed = stored ? (stored | 0) >>> 0 : 0;
       if (!_audioSeed) {
         _audioSeed = (Math.random() * 0xFFFFFFFF) >>> 0;
-        localStorage.setItem("__rdt_a", String(_audioSeed));
+        localStorage.setItem(_audioKey, String(_audioSeed));
       }
     } catch (_) {
       _audioSeed = (Math.random() * 0xFFFFFFFF) >>> 0;
@@ -285,6 +302,56 @@
       AnalyserNode.prototype.getFloatFrequencyData,
       "function getFloatFrequencyData() { [native code] }"
     );
+  } catch (_) {}
+
+  // --- WEBGL FINGERPRINT NOISE ---
+  // DataDome reads UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL via the
+  // WEBGL_debug_renderer_info extension. With canvas now noised, leaving WebGL
+  // pristine creates an asymmetric fingerprint (one surface noised, one not) —
+  // which itself is anomalous compared to a real device. Append a stable-per-
+  // profile suffix so the WebGL hash is consistent across reloads (matching real
+  // device behaviour) but not pristine across installs.
+  try {
+    var _webglKey = "eu_pref_w1";
+    var _webglSuffix;
+    try {
+      var _storedW = localStorage.getItem(_webglKey);
+      if (_storedW) {
+        _webglSuffix = _storedW;
+      } else {
+        // Tiny invisible suffix — a single trailing space is a no-op visually
+        // but flips the string hash deterministically per profile.
+        _webglSuffix = (Math.random() < 0.5) ? "" : " ";
+        localStorage.setItem(_webglKey, _webglSuffix);
+      }
+    } catch (_) {
+      _webglSuffix = "";
+    }
+
+    var UNMASKED_VENDOR  = 0x9245; // 37445
+    var UNMASKED_RENDERER = 0x9246; // 37446
+
+    function _patchWebGLGetParameter(proto) {
+      if (!proto || !proto.getParameter) return;
+      var orig = proto.getParameter;
+      var patched = function (param) {
+        var value = orig.call(this, param);
+        if (typeof value === "string" && _webglSuffix &&
+            (param === UNMASKED_VENDOR || param === UNMASKED_RENDERER)) {
+          return value + _webglSuffix;
+        }
+        return value;
+      };
+      proto.getParameter = patched;
+      _spoofMap.set(patched, "function getParameter() { [native code] }");
+    }
+
+    if (typeof WebGLRenderingContext !== "undefined") {
+      _patchWebGLGetParameter(WebGLRenderingContext.prototype);
+    }
+    if (typeof WebGL2RenderingContext !== "undefined") {
+      _patchWebGLGetParameter(WebGL2RenderingContext.prototype);
+    }
   } catch (_) {}
 
   // --- IFRAME DEFENSE (Phase 2) ---
