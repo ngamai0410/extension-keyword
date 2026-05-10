@@ -667,7 +667,49 @@ const QUEUE_KEY = "getify_keyword_queue_v2";
 const BOT_PRE_EXPAND = [3_000, 6_000];  // wait after page loads before clicking anything
 const BOT_SETTLE = [6_000, 10_000];  // wait after last keyword API hit before saving
 const BOT_EXPAND_LIMIT = [22_000, 34_000]; // max time given for expansion before giving up
-const BOT_NEXT_PAUSE = [4_000, 9_000];  // rest between closing one tab and opening the next
+
+// Inter-listing pause is randomised across "browsing moods" instead of using a
+// fixed range. Real users alternate bursty stretches (clicks back-to-back) with
+// contemplative ones (reading, comparing, getting distracted). A flat 4–9 s
+// distribution every time is itself a fingerprint.
+//   quick  — bursty session, click straight through                     (55%)
+//   medium — average pace, brief context check between listings         (30%)
+//   long   — distracted: phone buzzed, switched tabs, came back later   (15%)
+// Long pauses use chrome.alarms because >25 s setTimeouts get killed when the
+// MV3 service worker idles.
+const BOT_PAUSE_PROFILES = [
+  { name: "quick",  weight: 0.55, range: [3_000, 9_000] },
+  { name: "medium", weight: 0.30, range: [12_000, 28_000] },
+  { name: "long",   weight: 0.15, range: [45_000, 150_000] },
+];
+const BOT_NEXT_ALARM = "getify-bot-next-pause";
+const BOT_NEXT_ALARM_THRESHOLD = 25_000; // delays above this go through alarms
+
+function pickPauseDelay() {
+  const r = Math.random();
+  let acc = 0;
+  for (const p of BOT_PAUSE_PROFILES) {
+    acc += p.weight;
+    if (r < acc) return { profile: p.name, ms: humanJitter(p.range[0], p.range[1]) };
+  }
+  const last = BOT_PAUSE_PROFILES[BOT_PAUSE_PROFILES.length - 1];
+  return { profile: last.name, ms: humanJitter(last.range[0], last.range[1]) };
+}
+
+// Schedule the next listing open after a randomised pause. Short delays use
+// setTimeout (precise, in-memory); long ones use chrome.alarms so the timer
+// survives if the MV3 service worker gets evicted mid-pause.
+async function scheduleNextOpen() {
+  const { ms } = pickPauseDelay();
+  if (ms <= BOT_NEXT_ALARM_THRESHOLD) {
+    await new Promise((r) => setTimeout(r, ms));
+    if (!bot.active) return;
+    await botOpenNext();
+  } else {
+    await botPersist();
+    chrome.alarms.create(BOT_NEXT_ALARM, { when: Date.now() + ms });
+  }
+}
 
 function jitter(min, max) {
   return Math.floor(min + Math.random() * (max - min));
@@ -828,6 +870,7 @@ function botStop() {
   clearBotTimers();
   chrome.alarms.clear(BOT_BREAK_ALARM);
   chrome.alarms.clear(BOT_WAITING_ALARM);
+  chrome.alarms.clear(BOT_NEXT_ALARM);
   bot.active = false;
   bot.state = "idle";
   bot.listingId = null;
@@ -1046,8 +1089,7 @@ async function botSaveAndAdvance() {
     return;
   }
 
-  await new Promise((r) => setTimeout(r, humanJitter(...BOT_NEXT_PAUSE)));
-  await botOpenNext();
+  await scheduleNextOpen();
 }
 
 async function handleBotResume(decision, sendResponse) {
@@ -1070,8 +1112,7 @@ async function handleBotResume(decision, sendResponse) {
     await botMarkListing(bot.listingId, skipStatus);
     await chrome.storage.local.set({ [STORAGE_KEY]: [] });
     updateBadge(0);
-    await new Promise((r) => setTimeout(r, humanJitter(...BOT_NEXT_PAUSE)));
-    await botOpenNext();
+    await scheduleNextOpen();
   }
 }
 
@@ -1277,6 +1318,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // user "returning" at sub-second precision after a multi-minute break is a
     // signal even when the break itself is randomised.
     await new Promise((r) => setTimeout(r, humanJitter(800, 2_500)));
+    if (!bot.active) return;
+    await botOpenNext();
+    return;
+  }
+
+  if (alarm.name === BOT_NEXT_ALARM) {
+    if (!bot.active) await botRehydrate();
+    if (!bot.active) return;
+    // Tiny extra jitter so the navigation doesn't fire on the exact alarm
+    // boundary — sub-second precision after a multi-minute pause is itself a
+    // signal even when the pause length is randomised.
+    await new Promise((r) => setTimeout(r, humanJitter(400, 1_400)));
     if (!bot.active) return;
     await botOpenNext();
     return;

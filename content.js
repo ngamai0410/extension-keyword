@@ -154,6 +154,25 @@
     }
   }
 
+  // Glance at non-keyword regions (page header, footer) before drilling into
+  // the table — a real user gets oriented in the page first, not laser-focused
+  // on the data section every time. Each branch is probabilistic so per-listing
+  // patterns vary instead of forming a fingerprint of "always do X first".
+  async function scrollExploration() {
+    // ~45% — glance up at the page header / listing context
+    if (Math.random() < 0.45) {
+      try { window.scrollTo({ top: jitter(0, 60), behavior: "smooth" }); } catch (_) {}
+      await sleep(humanJitter(1_400, 3_200));
+    }
+    // ~22% — peek at the bottom of the page briefly
+    if (Math.random() < 0.22) {
+      const total = document.body && document.body.scrollHeight || 0;
+      const target = Math.max(0, total - (window.innerHeight || 800) - jitter(40, 200));
+      try { window.scrollTo({ top: target, behavior: "smooth" }); } catch (_) {}
+      await sleep(humanJitter(900, 2_000));
+    }
+  }
+
   // Ease-out cubic scroll to element — avoids the instant "snap" of scrollIntoView
   // which is a strong automation signal.
   async function scrollToElement(el) {
@@ -178,36 +197,41 @@
   // Dispatch a full mouse-event sequence with real viewport coordinates and a
   // realistic trajectory leading up to the click.
   async function humanClick(el) {
-    const rect = el.getBoundingClientRect();
-    const x = Math.round(rect.left + rect.width  * (0.3 + Math.random() * 0.4));
-    const y = Math.round(rect.top  + rect.height * (0.3 + Math.random() * 0.4));
+    driftLock = true;
+    try {
+      const rect = el.getBoundingClientRect();
+      const x = Math.round(rect.left + rect.width  * (0.3 + Math.random() * 0.4));
+      const y = Math.round(rect.top  + rect.height * (0.3 + Math.random() * 0.4));
 
-    // With 30% probability, hover a nearby unrelated element first — breaks the
-    // "always direct path to interactive target" pattern bots exhibit
-    await maybeFakeHover(el);
-    // Move cursor to the target before pressing — zero-movement clicks are flagged
-    await simulateMousePath(x, y);
+      // With 30% probability, hover a nearby unrelated element first — breaks the
+      // "always direct path to interactive target" pattern bots exhibit
+      await maybeFakeHover(el);
+      // Move cursor to the target before pressing — zero-movement clicks are flagged
+      await simulateMousePath(x, y);
 
-    // Modern Chromium fires PointerEvents alongside MouseEvents and varies `buttons`
-    // across phases — hover=0, mousedown/pointerdown=1, mouseup/click=0. A handler
-    // reading `e.buttons` on `mousedown` and seeing 0 is a paired-event mismatch
-    // that doesn't occur in any real browser.
-    const hoverInit = pointerInit(x, y, { button: -1, buttons: 0, pressure: 0 });
-    const downInit  = pointerInit(x, y, { button:  0, buttons: 1, pressure: 0.5 });
-    const upInit    = pointerInit(x, y, { button:  0, buttons: 0, pressure: 0 });
+      // Modern Chromium fires PointerEvents alongside MouseEvents and varies `buttons`
+      // across phases — hover=0, mousedown/pointerdown=1, mouseup/click=0. A handler
+      // reading `e.buttons` on `mousedown` and seeing 0 is a paired-event mismatch
+      // that doesn't occur in any real browser.
+      const hoverInit = pointerInit(x, y, { button: -1, buttons: 0, pressure: 0 });
+      const downInit  = pointerInit(x, y, { button:  0, buttons: 1, pressure: 0.5 });
+      const upInit    = pointerInit(x, y, { button:  0, buttons: 0, pressure: 0 });
 
-    if (PE) el.dispatchEvent(new PE("pointerover", hoverInit));
-    el.dispatchEvent(new MouseEvent("mouseover", hoverInit));
-    // "Decide before pressing" pause — real users hover the cursor and verify the
-    // target before pressing. Range matches typical motor-cognition latency.
-    await sleep(120, 380);
-    if (PE) el.dispatchEvent(new PE("pointerdown", downInit));
-    el.dispatchEvent(new MouseEvent("mousedown", downInit));
-    await sleep(60, 120);
-    if (PE) el.dispatchEvent(new PE("pointerup", upInit));
-    el.dispatchEvent(new MouseEvent("mouseup", upInit));
-    await sleep(15, 45); // micro-pause between mouseup and click — matches real motor latency
-    el.dispatchEvent(new MouseEvent("click", upInit));
+      if (PE) el.dispatchEvent(new PE("pointerover", hoverInit));
+      el.dispatchEvent(new MouseEvent("mouseover", hoverInit));
+      // "Decide before pressing" pause — real users hover the cursor and verify the
+      // target before pressing. Range matches typical motor-cognition latency.
+      await sleep(120, 380);
+      if (PE) el.dispatchEvent(new PE("pointerdown", downInit));
+      el.dispatchEvent(new MouseEvent("mousedown", downInit));
+      await sleep(60, 120);
+      if (PE) el.dispatchEvent(new PE("pointerup", upInit));
+      el.dispatchEvent(new MouseEvent("mouseup", upInit));
+      await sleep(15, 45); // micro-pause between mouseup and click — matches real motor latency
+      el.dispatchEvent(new MouseEvent("click", upInit));
+    } finally {
+      driftLock = false;
+    }
   }
 
   // With 30% probability, hover over an unrelated nearby element before the real
@@ -237,6 +261,45 @@
     if (PE) decoy.dispatchEvent(new PE("pointerout", dInit));
     decoy.dispatchEvent(new MouseEvent("mouseout", dInit));
     await sleep(80, 220);
+  }
+
+  // -------------------------------------------------------------------------
+  // Idle decoy layer — runs in the background during long waits so the cursor
+  // is never frozen for 20–30 s while the page loads or while we sleep between
+  // expand rounds. Pure stillness across long intervals is itself a signal.
+  // -------------------------------------------------------------------------
+
+  // Set by humanClick to suspend drift while a deliberate click sequence is
+  // dispatching its own pointer events (avoids interleaved mouse noise).
+  let driftLock = false;
+
+  function startIdleDrift() {
+    const stop = { stopped: false };
+    (async () => {
+      while (!stop.stopped) {
+        await sleep(humanJitter(2_500, 6_500));
+        if (stop.stopped) return;
+        if (driftLock) continue;
+        // Don't drift while the tab is hidden — real cursors don't move when
+        // the user isn't looking, so simulating that is itself suspicious.
+        if (!document.hasFocus() || document.visibilityState !== "visible") continue;
+
+        // Clustered amplitude — 70% tiny wiggle (the "I'm reading" jitter),
+        // 25% mid drift, 5% wider reposition. Matches real attentional bursts.
+        const r = Math.random();
+        let dx, dy;
+        if      (r < 0.70) { dx = jitter(-18, 18);   dy = jitter(-12, 12); }
+        else if (r < 0.95) { dx = jitter(-90, 90);   dy = jitter(-55, 55); }
+        else               { dx = jitter(-240, 240); dy = jitter(-150, 150); }
+
+        const w = window.innerWidth  || 1200;
+        const h = window.innerHeight ||  800;
+        const tx = Math.max(10, Math.min(w - 10, mousePos.x + dx));
+        const ty = Math.max(10, Math.min(h - 10, mousePos.y + dy));
+        try { await simulateMousePath(tx, ty); } catch (_) {}
+      }
+    })();
+    return () => { stop.stopped = true; };
   }
 
   // With 15% probability, fire blur then focus on the window — mimics the user
@@ -284,70 +347,99 @@
       return;
     }
 
-    // Wait up to ~28 s for the keyword section to appear (SPA lazy-renders)
-    const deadline = Date.now() + jitter(24_000, 28_000);
-    while (!keywordSectionExists() && Date.now() < deadline) {
-      await sleep(900, 1_600);
+    // Idle decoy layer — keeps the cursor naturally in motion during waits.
+    // Stopped in the finally block so it never outlives this listing's loop.
+    const stopDrift = startIdleDrift();
+
+    // One deep reading pause per listing (~25%), fired at a random expand round
+    // so the "user paused to study the data" event doesn't always land in the
+    // same place across listings.
+    let didDeepRead = false;
+    async function maybeDeepRead() {
+      if (didDeepRead) return;
+      if (Math.random() > 0.25) return;
+      didDeepRead = true;
+      await sleep(humanJitter(5_000, 12_000));
     }
 
-    // Multi-pass reading scroll before touching anything — simulates a human
-    // scanning the page up and down before deciding where to click
-    await humanReadingScroll();
-
-    // Small reading pause before first interaction — occasionally simulate a tab switch
-    await maybeSimulateFocusBlur();
-    await sleep(1_200, 2_500);
-
-    // Click expand buttons in multiple rounds — jittered count avoids a fixed
-    // "always exactly 6 expansions per listing" signature.
-    const maxRounds = jitter(4, 8);
-    for (let round = 0; round < maxRounds; round++) {
-      const buttons = findExpandButtons();
-      if (round > 0 && buttons.length === 0) break;
-
-      // Shuffle so we don't always click in DOM (top-to-bottom) order, and
-      // occasionally skip a button to revisit on the next round — a real user
-      // doesn't methodically click every "Show more" in document order.
-      const order = buttons.slice();
-      for (let k = order.length - 1; k > 0; k--) {
-        const j = Math.floor(Math.random() * (k + 1));
-        [order[k], order[j]] = [order[j], order[k]];
+    try {
+      // Wait up to ~28 s for the keyword section to appear (SPA lazy-renders)
+      const deadline = Date.now() + jitter(24_000, 28_000);
+      while (!keywordSectionExists() && Date.now() < deadline) {
+        await sleep(900, 1_600);
       }
-      for (const btn of order) {
-        if (Math.random() < 0.1) continue; // ~10% skip — picked up next round
-        // Re-check focus before each click — if user switched tabs mid-round,
-        // pause until they come back rather than clicking into a hidden tab.
-        if (!(await waitForFocus(45_000))) return;
-        try {
-          await scrollToElement(btn);
-          await humanClick(btn);
-        } catch (_) {}
-        // ~40% of clicks: a longer "reading" pause as if the user is reviewing
-        // the rows that just appeared. The remainder uses a short post-click
-        // gap so total expansion time stays bounded.
-        if (Math.random() < 0.4) {
-          await sleep(1_400, 3_200);
-        } else {
-          await sleep(400, 900);
+
+      // Glance around the page (header / footer) before focusing on the table —
+      // breaks the "always immediately scroll into the keyword section" pattern.
+      await scrollExploration();
+
+      // Multi-pass reading scroll before touching anything — simulates a human
+      // scanning the page up and down before deciding where to click
+      await humanReadingScroll();
+
+      // Small reading pause before first interaction — occasionally simulate a tab switch
+      await maybeSimulateFocusBlur();
+      await sleep(1_200, 2_500);
+
+      // Click expand buttons in multiple rounds — jittered count avoids a fixed
+      // "always exactly 6 expansions per listing" signature.
+      const maxRounds = jitter(4, 8);
+      // Pick a round at which the deep-read pause is allowed to fire — random
+      // per listing so it doesn't always trigger on round 0.
+      const deepReadRound = jitter(1, maxRounds);
+      for (let round = 0; round < maxRounds; round++) {
+        const buttons = findExpandButtons();
+        if (round > 0 && buttons.length === 0) break;
+
+        // Shuffle so we don't always click in DOM (top-to-bottom) order, and
+        // occasionally skip a button to revisit on the next round — a real user
+        // doesn't methodically click every "Show more" in document order.
+        const order = buttons.slice();
+        for (let k = order.length - 1; k > 0; k--) {
+          const j = Math.floor(Math.random() * (k + 1));
+          [order[k], order[j]] = [order[j], order[k]];
         }
-      }
-
-      if (buttons.length > 0) {
-        // After clicking, scroll down to review new content, then occasionally back up
-        await humanScroll();
-        if (Math.random() < 0.4) {
-          await sleep(400, 800);
-          await humanScrollUp();
+        for (const btn of order) {
+          if (Math.random() < 0.1) continue; // ~10% skip — picked up next round
+          // Re-check focus before each click — if user switched tabs mid-round,
+          // pause until they come back rather than clicking into a hidden tab.
+          if (!(await waitForFocus(45_000))) return;
+          try {
+            await scrollToElement(btn);
+            await humanClick(btn);
+          } catch (_) {}
+          // ~40% of clicks: a longer "reading" pause as if the user is reviewing
+          // the rows that just appeared. The remainder uses a short post-click
+          // gap so total expansion time stays bounded.
+          if (Math.random() < 0.4) {
+            await sleep(1_400, 3_200);
+          } else {
+            await sleep(400, 900);
+          }
         }
+
+        if (buttons.length > 0) {
+          // After clicking, scroll down to review new content, then occasionally back up
+          await humanScroll();
+          if (Math.random() < 0.4) {
+            await sleep(400, 800);
+            await humanScrollUp();
+          }
+        }
+
+        // On the chosen round, possibly take a long study pause before advancing
+        if (round === deepReadRound) await maybeDeepRead();
+
+        // Wait for new content to load before checking for more buttons
+        await sleep(2_200, 4_000);
       }
 
-      // Wait for new content to load before checking for more buttons
-      await sleep(2_200, 4_000);
+      // Final scroll to the bottom to trigger any remaining lazy-loaded rows
+      await humanReadingScroll();
+      await sleep(800, 1_500);
+    } finally {
+      stopDrift();
     }
-
-    // Final scroll to the bottom to trigger any remaining lazy-loaded rows
-    await humanReadingScroll();
-    await sleep(800, 1_500);
 
     try {
       chrome.runtime.sendMessage({ action: "EXPANSION_DONE" });
