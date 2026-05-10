@@ -227,10 +227,15 @@
       await sleep(120, 380);
       if (PE) el.dispatchEvent(new PE("pointerdown", downInit));
       el.dispatchEvent(new MouseEvent("mousedown", downInit));
-      await sleep(60, 120);
+      // Press-release duration: real-user histograms cluster ~80–200 ms.
+      // A sub-80 ms minimum lands on the short tail and looks synthetic.
+      await sleep(80, 160);
       if (PE) el.dispatchEvent(new PE("pointerup", upInit));
       el.dispatchEvent(new MouseEvent("mouseup", upInit));
-      await sleep(15, 45); // micro-pause between mouseup and click — matches real motor latency
+      // Real Chromium fires click synchronously after mouseup (~0 ms apart in
+      // the same task). A multi-ms forced gap is itself a paired-event
+      // mismatch — keep this near zero.
+      await sleep(0, 3);
       el.dispatchEvent(new MouseEvent("click", upInit));
     } finally {
       driftLock = false;
