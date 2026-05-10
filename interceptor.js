@@ -261,13 +261,16 @@
   try {
     // Seed must be stable per-origin per-profile; real audio fingerprints don't drift
     // across reloads. localStorage gives us that persistence without a chrome.* call.
+    // Storage key avoids the bot-distinctive __rdt_* / __react_* / dunder
+    // patterns that anti-bot scripts probe for; mimics a generic app-pref key.
     var _audioSeed;
+    var _audioKey = "eu_pref_a1";
     try {
-      var stored = localStorage.getItem("__rdt_a");
+      var stored = localStorage.getItem(_audioKey);
       _audioSeed = stored ? (stored | 0) >>> 0 : 0;
       if (!_audioSeed) {
         _audioSeed = (Math.random() * 0xFFFFFFFF) >>> 0;
-        localStorage.setItem("__rdt_a", String(_audioSeed));
+        localStorage.setItem(_audioKey, String(_audioSeed));
       }
     } catch (_) {
       _audioSeed = (Math.random() * 0xFFFFFFFF) >>> 0;

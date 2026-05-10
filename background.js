@@ -666,7 +666,10 @@ const QUEUE_KEY = "getify_keyword_queue_v2";
 // Human-like timing ranges (all in ms)
 const BOT_PRE_EXPAND = [3_000, 6_000];  // wait after page loads before clicking anything
 const BOT_SETTLE = [6_000, 10_000];  // wait after last keyword API hit before saving
-const BOT_EXPAND_LIMIT = [22_000, 34_000]; // max time given for expansion before giving up
+// Capped under 30s so the fallback setTimeout never outlives the MV3 service-worker
+// idle eviction window (the keyword-page-stalled case has no CAPTURE traffic to
+// keep the SW alive, so a >30s timer can be destroyed mid-wait).
+const BOT_EXPAND_LIMIT = [18_000, 26_000]; // max time given for expansion before giving up
 
 // Inter-listing pause is randomised across "browsing moods" instead of using a
 // fixed range. Real users alternate bursty stretches (clicks back-to-back) with

@@ -214,8 +214,11 @@
       // reading `e.buttons` on `mousedown` and seeing 0 is a paired-event mismatch
       // that doesn't occur in any real browser.
       const hoverInit = pointerInit(x, y, { button: -1, buttons: 0, pressure: 0 });
-      const downInit  = pointerInit(x, y, { button:  0, buttons: 1, pressure: 0.5 });
-      const upInit    = pointerInit(x, y, { button:  0, buttons: 0, pressure: 0 });
+      // Real Chromium primary-click mousedown/mouseup/click all carry detail=1.
+      // Omitting detail makes synthetic events default to 0 — a paired-event
+      // mismatch any handler reading e.detail can detect.
+      const downInit  = { ...pointerInit(x, y, { button: 0, buttons: 1, pressure: 0.5 }), detail: 1 };
+      const upInit    = { ...pointerInit(x, y, { button: 0, buttons: 0, pressure: 0 }),   detail: 1 };
 
       if (PE) el.dispatchEvent(new PE("pointerover", hoverInit));
       el.dispatchEvent(new MouseEvent("mouseover", hoverInit));
