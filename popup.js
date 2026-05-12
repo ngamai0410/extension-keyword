@@ -34,14 +34,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnMarkKeywordDone = document.getElementById("btn-mark-keyword-done");
   const btnResetKeywordQueue = document.getElementById("btn-reset-keyword-queue");
 
+  const KEYWORD_QUEUE_STORAGE_KEY = "getify_keyword_queue_v1";
   const KEYWORD_TEMPLATE_STORAGE_KEY = "getify_keyword_url_template_v1";
   const DEFAULT_KEYWORD_URL_TEMPLATE =
     "https://www.etsy.com/your/shops/me/advertising/listings/{listing_id}";
 
   let allSessions = [];
-  let keywordQueue = [];
-  let botRunning = false;
-  let currentPageType = "other"; // dashboard | keywords | etsy_other | other
+  let keywordQueue = loadKeywordQueue();
 
   // --- LOAD DATA ---
 
@@ -70,7 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
       btnAddDb.disabled = true;
       btnAddDbKeywords.disabled = true;
       btnClear.disabled = true;
-      applyPageContext(currentPageType);
+      setDbStatus("No captured data to insert yet.", "info");
       return;
     }
 
@@ -81,8 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btnAddDb.disabled = false;
     btnAddDbKeywords.disabled = false;
     btnClear.disabled = false;
-    setDbStatus("Ready to insert.", "info");
-    applyPageContext(currentPageType);
+    setDbStatus("Ready to insert listing_report_rows.", "info");
 
     // Render newest first
     const reversed = [...allSessions].reverse();
@@ -199,13 +197,13 @@ document.addEventListener("DOMContentLoaded", () => {
         // "Show 50" / sort / filter fires this separate endpoint
         processProlistStats(body, listingsMap);
       }
-
+      
       if ((body && (body.queryStats || body.queries)) || url.indexOf("querystats") !== -1) {
         processKeywordStats(body, result, url);
       }
 
-      if (body.listing && body.graphStats && Array.isArray(body.graphStats)) {
-        processListingDailyStats(body, result, url);
+      if (body.listing && Array.isArray(body.graphStats)) {
+        processListingDailyStats(body, result);
       }
 
       if (hasAttributionShape || url.indexOf("revenue/attribution") !== -1) {
@@ -251,21 +249,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
     fillDerivedSummary(result);
 
-    // Pre-build rows aligned with DB table listing_report
-    // We concatenate aggregate rows (if any) and daily rows (if any)
+    // Pre-build rows aligned with DB table listing_report.
+    // Dashboard captures produce aggregate rows (period = "YYYY/MM/DD-YYYY/MM/DD");
+    // each listing's keyword page also fires a graphStats payload, which we
+    // turn into per-day rows (period = "YYYY-MM-DD"). Concatenate both — the
+    // differing period keys mean there's no PK collision.
     const aggregateListingRows = buildListingReportRows(result);
     const dailyListingRows = result.listing_daily_rows || [];
-
-    // Deduplicate daily rows just in case
     const dailyDedupeMap = new Map();
     for (const row of dailyListingRows) {
       dailyDedupeMap.set(`${row.listing_id}_${row.period}`, row);
     }
-    const deduplicatedDailyRows = Array.from(dailyDedupeMap.values());
-
-    // If we have daily rows for a listing, we might not want the aggregate row for that same listing?
-    // Usually, saving both is fine since the period differs ('YYYY/MM/DD-YYYY/MM/DD' vs 'YYYY-MM-DD').
-    result.listing_report_rows = [...aggregateListingRows, ...deduplicatedDailyRows];
+    result.listing_report_rows = [
+      ...aggregateListingRows,
+      ...Array.from(dailyDedupeMap.values()),
+    ];
 
     // Pre-build rows aligned with DB table keyword_report
     result.keyword_report_rows = buildKeywordReportRows(result);
@@ -369,7 +367,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function processKeywordStats(body, result, url) {
     const queries = body && (body.queryStats || body.queries);
     if (!queries || !Array.isArray(queries)) return;
-
+    
     let listingIdStr = "";
     if (body.listing && body.listing.listingId) {
       listingIdStr = String(body.listing.listingId);
@@ -420,12 +418,15 @@ document.addEventListener("DOMContentLoaded", () => {
         clicks: q.clickCount || 0,
         click_rate: q.clickRate || 0,
         views: q.impressionCounts || 0,
-        relevant: q.isRelevant != null ? String(q.isRelevant) : null
+        relevant: q.isRelevant != null ? q.isRelevant : true
       });
     }
   }
 
-  function processListingDailyStats(body, result, url) {
+  // Each listing's keyword page also returns a graphStats array with one
+  // entry per day. We turn those into per-day listing_report rows so a
+  // single visit gives us both keyword breakdown and daily totals.
+  function processListingDailyStats(body, result) {
     if (!result.listing_daily_rows) result.listing_daily_rows = [];
 
     const listing = body.listing;
@@ -434,15 +435,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const vmName = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.VM_NAME : null;
 
     for (const stat of body.graphStats) {
+      if (!stat || stat.timestamp == null) continue;
       const ts = stat.timestamp > 9999999999 ? stat.timestamp : stat.timestamp * 1000;
       const dateObj = new Date(ts);
       const yyyy = dateObj.getFullYear();
-      const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-      const dd = String(dateObj.getDate()).padStart(2, '0');
+      const mm = String(dateObj.getMonth() + 1).padStart(2, "0");
+      const dd = String(dateObj.getDate()).padStart(2, "0");
       const period = `${yyyy}-${mm}-${dd}`;
 
       let roasVal = stat.roas;
-      if (typeof roasVal === 'object' && roasVal !== null && roasVal.parsedValue != null) {
+      if (roasVal && typeof roasVal === "object" && roasVal.parsedValue != null) {
         roasVal = roasVal.parsedValue;
       }
 
@@ -467,7 +469,7 @@ document.addEventListener("DOMContentLoaded", () => {
         spend: (spendCents / 100).toFixed(2),
         roas: Number(roasVal || 0).toFixed(2),
         import_time: importTime,
-        importer: "getify_json_daily"
+        importer: "getify_json_daily",
       });
     }
   }
@@ -582,7 +584,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Try all array-valued keys as fallback
       for (const key of Object.keys(body)) {
         if (Array.isArray(body[key]) && body[key].length > 0 &&
-          typeof body[key][0] === "object" && body[key][0] !== null) {
+            typeof body[key][0] === "object" && body[key][0] !== null) {
           const first = body[key][0];
           // Check if items look like listing objects
           if (first.listing || first.listingId || first.totalStats) {
@@ -1113,104 +1115,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // =====================================================================
-  // PAGE CONTEXT — show only relevant controls per page type
-  // =====================================================================
-
-  function detectPageType(url) {
-    if (!url || !url.includes("etsy.com")) return "other";
-    if (/\/advertising\/listings\/\d+/.test(url)) return "keywords";
-    if (/\/advertising/.test(url)) return "dashboard";
-    return "etsy_other";
-  }
-
-  function hasKeywordData() {
-    return allSessions.some((s) => {
-      const b = s.body;
-      return (
-        b &&
-        typeof b === "object" &&
-        ((Array.isArray(b.queryStats) && b.queryStats.length > 0) ||
-          (Array.isArray(b.queries) && b.queries.length > 0))
-      );
-    });
-  }
-
-  function show(el) { if (el) el.style.display = ""; }
-  function hide(el) { if (el) el.style.display = "none"; }
-  function showIf(el, cond) { cond ? show(el) : hide(el); }
-
-  function applyPageContext(pageType) {
-    const isDashboard = pageType === "dashboard";
-    const isKeywords = pageType === "keywords";
-    const hasData = allSessions.length > 0;
-    const hasKwData = hasKeywordData();
-    const hasQueue = keywordQueue.length > 0;
-
-    // --- Top action buttons ---
-    // Dashboard: only show Add Listings to DB as the primary action.
-    // Queue and bot panels reveal themselves after a successful insert.
-    showIf(btnExportClean, hasData && !isDashboard);
-    showIf(btnExport, hasData && !isKeywords && !isDashboard);
-    showIf(btnExportCsv, hasData && isDashboard && hasQueue);
-    showIf(btnAddDb, hasData && isDashboard);
-    showIf(btnAddDbKeywords, isKeywords && hasKwData);
-    showIf(btnClear, hasData && !isDashboard);
-    // Settings button always visible
-
-    // --- Keyword Queue panel ---
-    // Only shown once the queue has been populated (after Add Listings to DB).
-    const queuePanel = document.getElementById("queue-panel");
-    showIf(queuePanel, hasQueue);
-
-    // Inside queue panel: context-specific controls
-    showIf(btnRefreshQueue, isDashboard);
-    showIf(document.getElementById("queue-template-row"), isDashboard);
-    // Open Next stays available on the keyword page too so the manual
-    // flow can advance to the next listing without bouncing back to the dashboard.
-    showIf(document.getElementById("queue-actions-row"), isDashboard || isKeywords);
-
-    // --- Bot panel ---
-    // Only shown once the queue exists or the bot is already running.
-    const botPanelEl = document.getElementById("bot-panel");
-    showIf(botPanelEl, hasQueue || botRunning);
-
-    // --- Page badge ---
-    const badge = document.getElementById("page-badge");
-    if (badge) {
-      const MAP = {
-        dashboard: ["Ads Dashboard", "dashboard"],
-        keywords: ["Keyword Stats", "keywords"],
-        etsy_other: ["Etsy", "etsy"],
-        other: ["Outside Etsy", "other"],
-      };
-      const [label, cls] = MAP[pageType] || ["Unknown", "other"];
-      badge.textContent = label;
-      badge.className = "page-badge " + cls;
-      show(badge);
-    }
-
-    // --- Contextual db-status hint when no data ---
-    if (!hasData) {
-      if (isDashboard) {
-        setDbStatus("On the Ads Dashboard — scroll the listing table to capture data.", "info");
-      } else if (isKeywords) {
-        setDbStatus("Keyword page detected — waiting for API data to load.", "info");
-      } else {
-        setDbStatus("Navigate to your Etsy Ads Dashboard to capture listing data.", "info");
-      }
-    }
-  }
-
-  function initPageContext(cb) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const url = (tabs && tabs[0] && tabs[0].url) || "";
-      currentPageType = detectPageType(url);
-      applyPageContext(currentPageType);
-      if (cb) cb();
-    });
-  }
-
-  // =====================================================================
   // MANUAL KEYWORD QUEUE
   // =====================================================================
 
@@ -1342,20 +1246,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return keywordQueue.find((item) => item.status === "opened");
   }
 
-  async function resolveCurrentListingId(keywordRows, listingRows) {
-    const fromKeyword = (keywordRows || []).find((r) => r && r.listing_id);
-    if (fromKeyword) return String(fromKeyword.listing_id);
-    const fromListing = (listingRows || []).find((r) => r && r.listing_id);
-    if (fromListing) return String(fromListing.listing_id);
-    return new Promise((resolve) => {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const url = (tabs && tabs[0] && tabs[0].url) || "";
-        const m = url.match(/\/advertising\/listings\/(\d+)/);
-        resolve(m ? m[1] : null);
-      });
-    });
-  }
-
   function openNextKeywordListing() {
     const item = getNextKeywordItem();
     if (!item) return;
@@ -1393,8 +1283,18 @@ document.addEventListener("DOMContentLoaded", () => {
     renderKeywordQueue();
   }
 
+  function loadKeywordQueue() {
+    try {
+      const raw = localStorage.getItem(KEYWORD_QUEUE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
   function saveKeywordQueue() {
-    chrome.runtime.sendMessage({ action: "QUEUE_SAVE", queue: keywordQueue });
+    localStorage.setItem(KEYWORD_QUEUE_STORAGE_KEY, JSON.stringify(keywordQueue));
   }
 
   function getKeywordUrlTemplate() {
@@ -1403,14 +1303,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function loadKeywordUrlTemplate() {
-    chrome.storage.local.get(KEYWORD_TEMPLATE_STORAGE_KEY, (result) => {
-      inputKeywordUrlTemplate.value =
-        result[KEYWORD_TEMPLATE_STORAGE_KEY] || DEFAULT_KEYWORD_URL_TEMPLATE;
-    });
+    const saved = localStorage.getItem(KEYWORD_TEMPLATE_STORAGE_KEY);
+    inputKeywordUrlTemplate.value = saved || DEFAULT_KEYWORD_URL_TEMPLATE;
   }
 
   function saveKeywordUrlTemplate() {
-    chrome.storage.local.set({ [KEYWORD_TEMPLATE_STORAGE_KEY]: getKeywordUrlTemplate() });
+    localStorage.setItem(KEYWORD_TEMPLATE_STORAGE_KEY, getKeywordUrlTemplate());
   }
 
   // --- EXPORT CLEAN JSON ---
@@ -1503,7 +1401,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (allSessions.length === 0) return;
 
     const cleanData = transformToClean(allSessions);
-    const rows = cleanData.listing_report_rows || [];
+    // Only aggregate dashboard rows here (period "YYYY/MM/DD-YYYY/MM/DD").
+    // Per-day rows ("YYYY-MM-DD") belong to the keyword-page flow and are
+    // inserted via Add Keywords to DB — splitting avoids double-inserts.
+    const rows = (cleanData.listing_report_rows || []).filter(
+      (r) => !(r && typeof r.period === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.period))
+    );
 
     if (rows.length === 0) {
       setDbStatus("No listing_report_rows found to insert.", "error");
@@ -1551,15 +1454,10 @@ document.addEventListener("DOMContentLoaded", () => {
         ? response.message
         : `Inserted ${inserted} rows into listing_report.`;
       setDbStatus(statusMsg, "success");
-
-      // Auto-build keyword queue from the captured sessions so the
-      // queue panel and bot panel appear immediately after insert.
-      buildKeywordQueueFromSessions();
-      applyPageContext(currentPageType);
     } catch (error) {
       setDbStatus(
         "Database insert failed: " +
-        String(error && error.message ? error.message : error),
+          String(error && error.message ? error.message : error),
         "error"
       );
     } finally {
@@ -1569,22 +1467,27 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // --- ADD KEYWORDS TO DB ---
-  // On the keyword page we extract BOTH daily listing rows and keyword rows
-  // so a single click captures everything the page exposed. Listings must
-  // be inserted first because keyword inserts require the FK row to exist.
+  // Insert daily listing rows first (FK target), then keyword rows. The
+  // daily rows come from each listing's graphStats payload, which fires
+  // on the same keyword page that produces the queryStats payload, so a
+  // single click captures everything the page exposed.
   btnAddDbKeywords.addEventListener("click", async () => {
     if (allSessions.length === 0) return;
 
     const cleanData = transformToClean(allSessions);
     const keywordRows = cleanData.keyword_report_rows || [];
-    const listingRows = cleanData.listing_report_rows || [];
+    // Only the per-day daily rows belong to the keyword-page capture
+    // (period like "YYYY-MM-DD"). Aggregate dashboard rows use the
+    // "YYYY/MM/DD-YYYY/MM/DD" form and should go through Add Listings to DB.
+    const dailyRows = (cleanData.listing_report_rows || []).filter(
+      (r) => r && typeof r.period === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.period)
+    );
 
-    if (keywordRows.length === 0 && listingRows.length === 0) {
+    if (keywordRows.length === 0 && dailyRows.length === 0) {
       setDbStatus("No keyword or daily rows found to insert.", "error");
       return;
     }
 
-    // Get connection string from storage
     const config = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: "GET_DB_CONFIG" }, resolve);
     });
@@ -1604,72 +1507,50 @@ document.addEventListener("DOMContentLoaded", () => {
     btnAddDbKeywords.disabled = true;
     btnAddDbKeywords.textContent = "Adding to DB...";
     setDbStatus(
-      `Sending ${listingRows.length} daily + ${keywordRows.length} keyword rows to Neon...`,
+      `Sending ${dailyRows.length} daily + ${keywordRows.length} keyword rows to Neon...`,
       "info"
     );
 
     try {
-      let listingInserted = 0;
+      let dailyInserted = 0;
       let keywordInserted = 0;
 
-      if (listingRows.length > 0) {
-        const listingResp = await new Promise((resolve) => {
+      if (dailyRows.length > 0) {
+        const dailyResp = await new Promise((resolve) => {
           chrome.runtime.sendMessage(
-            { action: "INSERT_TO_DB", rows: listingRows, connectionString: connStr },
+            { action: "INSERT_TO_DB", rows: dailyRows, connectionString: connStr },
             resolve
           );
         });
-        if (!listingResp || !listingResp.ok) {
-          throw new Error(
-            (listingResp && listingResp.error) || "Daily insert failed"
-          );
+        if (!dailyResp || !dailyResp.ok) {
+          throw new Error((dailyResp && dailyResp.error) || "Daily insert failed");
         }
-        listingInserted = listingResp.inserted || 0;
+        dailyInserted = dailyResp.inserted || 0;
       }
 
       if (keywordRows.length > 0) {
-        const keywordResp = await new Promise((resolve) => {
+        const kwResp = await new Promise((resolve) => {
           chrome.runtime.sendMessage(
             { action: "INSERT_KEYWORDS_TO_DB", rows: keywordRows, connectionString: connStr },
             resolve
           );
         });
-        if (!keywordResp || !keywordResp.ok) {
-          throw new Error(
-            (keywordResp && keywordResp.error) || "Keyword insert failed"
-          );
+        if (!kwResp || !kwResp.ok) {
+          throw new Error((kwResp && kwResp.error) || "Keyword insert failed");
         }
-        keywordInserted = keywordResp.inserted || 0;
+        keywordInserted = kwResp.inserted || 0;
       }
 
       setDbStatus(
-        `Inserted ${keywordInserted} keyword + ${listingInserted} daily rows.`,
+        `Inserted ${keywordInserted} keyword + ${dailyInserted} daily rows.`,
         "success"
       );
-
-      // Mark the listing we just captured as done so Open Next becomes
-      // clickable for the next pending listing. We resolve the current
-      // listing by ID — first from the inserted rows, falling back to the
-      // active tab URL — because a user who navigated here manually has
-      // no item in the "opened" state.
-      const currentListingId = await resolveCurrentListingId(
-        keywordRows,
-        listingRows
-      );
-      if (currentListingId) {
-        const match = keywordQueue.find(
-          (item) => String(item.listing_id) === String(currentListingId)
-        );
-        if (match) {
-          match.status = "done";
-          match.captured_at = new Date().toISOString();
-          saveKeywordQueue();
-        }
-      }
-      renderKeywordQueue();
-      applyPageContext(currentPageType);
     } catch (error) {
-      setDbStatus(String(error && error.message ? error.message : error), "error");
+      setDbStatus(
+        "Database insert failed: " +
+          String(error && error.message ? error.message : error),
+        "error"
+      );
     } finally {
       btnAddDbKeywords.textContent = originalLabel;
       btnAddDbKeywords.disabled = allSessions.length === 0;
@@ -1823,7 +1704,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
           setSettingsStatus(
             "Connection failed: " +
-            (response && response.error ? response.error : "unknown error"),
+              (response && response.error ? response.error : "unknown error"),
             "error"
           );
         }
@@ -1880,267 +1761,9 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // =====================================================================
-  // BOT UI
-  // =====================================================================
-
-  const btnBotToggle = document.getElementById("btn-bot-toggle");
-  const botStatusText = document.getElementById("bot-status-text");
-  const botProgressEl = document.getElementById("bot-progress");
-  const botCurrentEl = document.getElementById("bot-current");
-  const botProgressFill = document.getElementById("bot-progress-fill");
-  const botCompletePanel = document.getElementById("bot-complete-panel");
-  const errorPromptPanel = document.getElementById("error-prompt-panel");
-  const errorPromptMsg = document.getElementById("error-prompt-msg");
-  const btnBotRetry = document.getElementById("btn-bot-retry");
-  const btnBotNext = document.getElementById("btn-bot-next");
-
-  function showErrorPrompt(listingId, errorText) {
-    errorPromptMsg.textContent = `Listing ${listingId}: ${errorText}`;
-    errorPromptPanel.style.display = "block";
-    botCompletePanel.style.display = "none";
-  }
-
-  function hideErrorPrompt() {
-    errorPromptPanel.style.display = "none";
-  }
-
-  let breakTickerId = null;
-  let lastBotState = null;
-
-  function stopBreakTicker() {
-    if (breakTickerId != null) {
-      clearInterval(breakTickerId);
-      breakTickerId = null;
-    }
-  }
-
-  function formatBreakRemaining(breakUntil) {
-    const ms = Math.max(0, breakUntil - Date.now());
-    const totalSec = Math.ceil(ms / 1000);
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
-
-  function renderRunningLabel(state) {
-    if (state.state === "break" && state.breakUntil) {
-      const remaining = formatBreakRemaining(state.breakUntil);
-      botStatusText.textContent = `Running… (break — ${remaining} left)`;
-      return;
-    }
-    botStatusText.textContent = state.listingId
-      ? `Running… listing ${state.listingId} (${state.state})`
-      : `Running… (${state.state})`;
-  }
-
-  function updateBotUI(state) {
-    botRunning = state.active;
-    lastBotState = state;
-
-    if (state.state === "waiting_user") {
-      stopBreakTicker();
-      btnBotToggle.textContent = "Stop Bot";
-      btnBotToggle.className = "btn btn-bot-stop";
-      botStatusText.textContent = `Paused — save error on listing ${state.listingId}`;
-      botStatusText.className = "bot-status-text error";
-      botProgressEl.style.display = "block";
-      showErrorPrompt(state.listingId, state.errorMsg || "Unknown error");
-      return;
-    }
-
-    hideErrorPrompt();
-
-    if (state.active) {
-      btnBotToggle.textContent = "Stop Bot";
-      btnBotToggle.className = "btn btn-bot-stop";
-      renderRunningLabel(state);
-      botStatusText.className = "bot-status-text running";
-      botProgressEl.style.display = "block";
-      botCompletePanel.style.display = "none";
-
-      if (state.state === "break" && state.breakUntil) {
-        if (breakTickerId == null) {
-          breakTickerId = setInterval(() => {
-            if (!lastBotState || lastBotState.state !== "break" || !lastBotState.breakUntil) {
-              stopBreakTicker();
-              return;
-            }
-            renderRunningLabel(lastBotState);
-            if (Date.now() >= lastBotState.breakUntil) {
-              stopBreakTicker();
-            }
-          }, 1000);
-        }
-      } else {
-        stopBreakTicker();
-      }
-    } else if (state.state === "complete") {
-      stopBreakTicker();
-      btnBotToggle.textContent = "Start Bot";
-      btnBotToggle.className = "btn btn-bot-start";
-      botStatusText.textContent = "All listings processed";
-      botStatusText.className = "bot-status-text complete";
-      botProgressEl.style.display = "none";
-      botCompletePanel.style.display = "block";
-    } else {
-      stopBreakTicker();
-      btnBotToggle.textContent = "Start Bot";
-      btnBotToggle.className = "btn btn-bot-start";
-      botStatusText.textContent = "Idle — click Start to run automatically";
-      botStatusText.className = "bot-status-text";
-      botProgressEl.style.display = "none";
-      botCompletePanel.style.display = "none";
-    }
-  }
-
-  function refreshBotProgress() {
-    const total = keywordQueue.length;
-    const done = keywordQueue.filter((q) => q.status === "done").length;
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    botProgressFill.style.width = pct + "%";
-  }
-
-  btnBotToggle.addEventListener("click", () => {
-    if (botRunning) {
-      chrome.runtime.sendMessage({ action: "BOT_STOP" });
-      updateBotUI({ active: false, state: "idle", listingId: null });
-      return;
-    }
-
-    const template = getKeywordUrlTemplate();
-    if (!template.includes("{listing_id}")) {
-      setDbStatus("Set the Keyword URL Template with {listing_id} first.", "error");
-      return;
-    }
-    const pending = keywordQueue.filter(
-      (q) => !q.status || q.status === "pending" || q.status === "error"
-    );
-    if (pending.length === 0) {
-      setDbStatus("No pending listings. Click Refresh to build the queue first.", "error");
-      return;
-    }
-
-    saveKeywordUrlTemplate();
-    chrome.runtime.sendMessage({ action: "BOT_START", urlTemplate: template });
-    updateBotUI({ active: true, state: "opening", listingId: null });
-  });
-
-  btnBotRetry.addEventListener("click", () => {
-    hideErrorPrompt();
-    chrome.runtime.sendMessage({ action: "BOT_RESUME", decision: "retry" });
-    botStatusText.textContent = "Retrying…";
-    botStatusText.className = "bot-status-text running";
-  });
-
-  btnBotNext.addEventListener("click", () => {
-    hideErrorPrompt();
-    chrome.runtime.sendMessage({ action: "BOT_RESUME", decision: "next" });
-    botStatusText.textContent = "Skipping — moving to next listing…";
-    botStatusText.className = "bot-status-text running";
-  });
-
-  function parseListingIds(raw) {
-    return raw
-      .split(/[\n,\s]+/)
-      .map((s) => {
-        s = s.trim();
-        const urlMatch = s.match(/\/listings\/(\d+)/);
-        if (urlMatch) return urlMatch[1];
-        if (/^\d{6,12}$/.test(s)) return s;
-        return null;
-      })
-      .filter(Boolean);
-  }
-
-  // --- Receive live updates from the background bot ---
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message.action === "BOT_STATUS_UPDATE") {
-      updateBotUI(message.bot || {});
-      chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
-        keywordQueue = (r && r.queue) || keywordQueue;
-        renderKeywordQueue();
-        refreshBotProgress();
-        if (message.bot && message.bot.listingId) {
-          botCurrentEl.textContent = `Listing ${message.bot.listingId}`;
-        }
-      });
-    } else if (message.action === "BOT_COMPLETE") {
-      updateBotUI({ active: false, state: "complete", listingId: null });
-      setDbStatus(
-        `Bot complete — ${message.done}/${message.total} listings saved.`,
-        "success"
-      );
-      chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
-        keywordQueue = (r && r.queue) || keywordQueue;
-        renderKeywordQueue();
-        refreshBotProgress();
-      });
-    } else if (message.action === "BOT_LISTING_SAVED") {
-      let msg;
-      let statusKind = "success";
-      let badge = "saved";
-      if (message.ok) {
-        const parts = [];
-        if (message.keywordRows > 0) parts.push(`${message.keywordRows} keywords`);
-        if (message.listingRows > 0) parts.push(`${message.listingRows} daily rows`);
-        if (parts.length === 0) {
-          // Distinguish between "captured nothing" and "captured keywords but
-          // listing not yet in listing_report" so the user can act on each.
-          if (message.fkSkip) {
-            msg = `Skipped listing ${message.listingId} — captured ${message.capturedKeywords} keywords but listing not yet in listing_report (run "Add Listings to DB" first)`;
-          } else if (message.capturedKeywords > 0 || message.capturedListings > 0) {
-            msg = `Skipped listing ${message.listingId} — captured ${message.capturedKeywords} kw / ${message.capturedListings} daily but nothing was saved`;
-          } else {
-            msg = `Skipped listing ${message.listingId} — no data captured`;
-          }
-          statusKind = "info";
-          badge = "skipped";
-        } else {
-          msg = `Saved ${parts.join(" + ")} for listing ${message.listingId}`;
-        }
-      } else {
-        msg = `Error on listing ${message.listingId}: ${message.message}`;
-        statusKind = "error";
-        badge = "error";
-      }
-      setDbStatus(msg, statusKind);
-      botCurrentEl.textContent = `Listing ${message.listingId} — ${badge}`;
-      refreshBotProgress();
-    } else if (message.action === "BOT_ERROR") {
-      setDbStatus("Bot error: " + message.error, "error");
-      updateBotUI({ active: false, state: "idle", listingId: null });
-    } else if (message.action === "BOT_ERROR_PROMPT") {
-      showErrorPrompt(message.listingId, message.error);
-      botRunning = true;
-      btnBotToggle.textContent = "Stop Bot";
-      btnBotToggle.className = "btn btn-bot-stop";
-      botStatusText.textContent = `Paused — save error on listing ${message.listingId}`;
-      botStatusText.className = "bot-status-text error";
-      setDbStatus("Save failed: " + message.error, "error");
-    }
-  });
-
-  function loadBotStatus() {
-    chrome.runtime.sendMessage({ action: "BOT_STATUS" }, (res) => {
-      if (!res || !res.bot) return;
-      updateBotUI(res.bot);
-      if (res.bot.state === "waiting_user") {
-        setDbStatus("Save failed: " + (res.bot.errorMsg || "Unknown error"), "error");
-      }
-    });
-  }
-
   // --- INIT ---
-  // Detect page type first so applyPageContext has the correct value
-  // when loadData renders sessions — avoids a double-render with "other" type.
   loadKeywordUrlTemplate();
+  renderKeywordQueue();
+  loadData();
   loadDbConfig();
-  loadBotStatus();
-  chrome.runtime.sendMessage({ action: "QUEUE_GET" }, (r) => {
-    keywordQueue = (r && r.queue) || [];
-    renderKeywordQueue();
-    refreshBotProgress();
-    initPageContext(() => loadData());
-  });
 });

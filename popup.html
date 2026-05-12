@@ -12,7 +12,6 @@
     <header class="header">
       <h1>Getify Ads Spy</h1>
       <p class="subtitle" id="stats-line">Loading...</p>
-      <span class="page-badge" id="page-badge" style="display:none"></span>
     </header>
 
     <!-- Controls -->
@@ -55,23 +54,21 @@
           Refresh
         </button>
       </div>
-      <div id="queue-template-row">
-        <label class="settings-label" for="input-keyword-url-template">
-          Keyword URL Template
-        </label>
-        <input
-          type="text"
-          id="input-keyword-url-template"
-          class="settings-input"
-          placeholder="Paste Etsy listing keyword URL and replace the listing id with {listing_id}"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <div class="settings-hint">
-          Use {listing_id} where the listing id should go. Open Next only opens one listing at a time.
-        </div>
+      <label class="settings-label" for="input-keyword-url-template">
+        Keyword URL Template
+      </label>
+      <input
+        type="text"
+        id="input-keyword-url-template"
+        class="settings-input"
+        placeholder="Paste Etsy listing keyword URL and replace the listing id with {listing_id}"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="settings-hint">
+        Use {listing_id} where the listing id should go. Open Next only opens one listing at a time.
       </div>
-      <div class="queue-actions" id="queue-actions-row">
+      <div class="queue-actions">
         <button id="btn-open-next-keyword" class="btn btn-queue" disabled>
           Open Next
         </button>
@@ -83,42 +80,6 @@
         </button>
       </div>
       <div class="queue-list" id="keyword-queue-list"></div>
-    </div>
-
-    <!-- Bot Control -->
-    <div class="bot-panel" id="bot-panel">
-      <div class="bot-header">
-        <div>
-          <div class="bot-title">Auto Bot</div>
-          <div class="bot-status-text" id="bot-status-text">Idle — click Start to run automatically</div>
-        </div>
-        <button id="btn-bot-toggle" class="btn btn-bot-start">Start Bot</button>
-      </div>
-      <div class="bot-progress" id="bot-progress" style="display:none">
-        <div class="bot-current" id="bot-current"></div>
-        <div class="progress-bar-track">
-          <div class="progress-bar-fill" id="bot-progress-fill" style="width:0%"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Bot Error Prompt (shown when DB save fails) -->
-    <div class="error-prompt-panel" id="error-prompt-panel" style="display:none">
-      <div class="error-prompt-title">Save failed — what should the bot do?</div>
-      <div class="error-prompt-msg" id="error-prompt-msg"></div>
-      <div class="error-prompt-actions">
-        <button id="btn-bot-retry" class="btn btn-bot-retry">Retry</button>
-        <button id="btn-bot-next" class="btn btn-bot-next">Skip &amp; Move Next</button>
-      </div>
-    </div>
-
-    <!-- Bot Complete Guidance (shown when bot queue is exhausted) -->
-    <div class="bot-complete-panel" id="bot-complete-panel" style="display:none">
-      <div class="bot-complete-title">All listings processed</div>
-      <div class="bot-complete-msg">
-        Go to the next page of your Ads Dashboard to load more listings,
-        then click <strong>Add Listings to DB</strong> to save them and rebuild the queue.
-      </div>
     </div>
 
     <!-- Database Settings (collapsible) -->
