@@ -1342,6 +1342,20 @@ document.addEventListener("DOMContentLoaded", () => {
     return keywordQueue.find((item) => item.status === "opened");
   }
 
+  async function resolveCurrentListingId(keywordRows, listingRows) {
+    const fromKeyword = (keywordRows || []).find((r) => r && r.listing_id);
+    if (fromKeyword) return String(fromKeyword.listing_id);
+    const fromListing = (listingRows || []).find((r) => r && r.listing_id);
+    if (fromListing) return String(fromListing.listing_id);
+    return new Promise((resolve) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const url = (tabs && tabs[0] && tabs[0].url) || "";
+        const m = url.match(/\/advertising\/listings\/(\d+)/);
+        resolve(m ? m[1] : null);
+      });
+    });
+  }
+
   function openNextKeywordListing() {
     const item = getNextKeywordItem();
     if (!item) return;
@@ -1633,15 +1647,26 @@ document.addEventListener("DOMContentLoaded", () => {
         "success"
       );
 
-      // Mark the current keyword listing as done in the manual queue so
-      // Open Next becomes clickable for the next listing.
-      const current = getCurrentKeywordItem();
-      if (current) {
-        current.status = "done";
-        current.captured_at = new Date().toISOString();
-        saveKeywordQueue();
+      // Mark the listing we just captured as done so Open Next becomes
+      // clickable for the next pending listing. We resolve the current
+      // listing by ID — first from the inserted rows, falling back to the
+      // active tab URL — because a user who navigated here manually has
+      // no item in the "opened" state.
+      const currentListingId = await resolveCurrentListingId(
+        keywordRows,
+        listingRows
+      );
+      if (currentListingId) {
+        const match = keywordQueue.find(
+          (item) => String(item.listing_id) === String(currentListingId)
+        );
+        if (match) {
+          match.status = "done";
+          match.captured_at = new Date().toISOString();
+          saveKeywordQueue();
+        }
       }
-      buildKeywordQueueFromSessions();
+      renderKeywordQueue();
       applyPageContext(currentPageType);
     } catch (error) {
       setDbStatus(String(error && error.message ? error.message : error), "error");
