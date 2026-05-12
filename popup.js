@@ -1165,7 +1165,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // Inside queue panel: context-specific controls
     showIf(btnRefreshQueue, isDashboard);
     showIf(document.getElementById("queue-template-row"), isDashboard);
-    showIf(document.getElementById("queue-actions-row"), isDashboard);
+    // Open Next stays available on the keyword page too so the manual
+    // flow can advance to the next listing without bouncing back to the dashboard.
+    showIf(document.getElementById("queue-actions-row"), isDashboard || isKeywords);
 
     // --- Bot panel ---
     // Only shown once the queue exists or the bot is already running.
@@ -1553,14 +1555,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // --- ADD KEYWORDS TO DB ---
+  // On the keyword page we extract BOTH daily listing rows and keyword rows
+  // so a single click captures everything the page exposed. Listings must
+  // be inserted first because keyword inserts require the FK row to exist.
   btnAddDbKeywords.addEventListener("click", async () => {
     if (allSessions.length === 0) return;
 
     const cleanData = transformToClean(allSessions);
-    const rows = cleanData.keyword_report_rows || [];
+    const keywordRows = cleanData.keyword_report_rows || [];
+    const listingRows = cleanData.listing_report_rows || [];
 
-    if (rows.length === 0) {
-      setDbStatus("No keyword_report_rows found to insert.", "error");
+    if (keywordRows.length === 0 && listingRows.length === 0) {
+      setDbStatus("No keyword or daily rows found to insert.", "error");
       return;
     }
 
@@ -1582,28 +1588,61 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const originalLabel = btnAddDbKeywords.textContent;
     btnAddDbKeywords.disabled = true;
-    btnAddDbKeywords.textContent = "Adding Keywords...";
-    setDbStatus(`Sending ${rows.length} keyword rows to Neon database...`, "info");
+    btnAddDbKeywords.textContent = "Adding to DB...";
+    setDbStatus(
+      `Sending ${listingRows.length} daily + ${keywordRows.length} keyword rows to Neon...`,
+      "info"
+    );
 
     try {
-      const response = await new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { action: "INSERT_KEYWORDS_TO_DB", rows: rows, connectionString: connStr },
-          resolve
-        );
-      });
+      let listingInserted = 0;
+      let keywordInserted = 0;
 
-      if (!response || !response.ok) {
-        throw new Error(
-          response && response.error ? response.error : "Insert failed"
-        );
+      if (listingRows.length > 0) {
+        const listingResp = await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            { action: "INSERT_TO_DB", rows: listingRows, connectionString: connStr },
+            resolve
+          );
+        });
+        if (!listingResp || !listingResp.ok) {
+          throw new Error(
+            (listingResp && listingResp.error) || "Daily insert failed"
+          );
+        }
+        listingInserted = listingResp.inserted || 0;
       }
 
-      const inserted = response.inserted || 0;
-      const statusMsg = response.message
-        ? response.message
-        : `Inserted ${inserted} rows into keyword_report.`;
-      setDbStatus(statusMsg, "success");
+      if (keywordRows.length > 0) {
+        const keywordResp = await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            { action: "INSERT_KEYWORDS_TO_DB", rows: keywordRows, connectionString: connStr },
+            resolve
+          );
+        });
+        if (!keywordResp || !keywordResp.ok) {
+          throw new Error(
+            (keywordResp && keywordResp.error) || "Keyword insert failed"
+          );
+        }
+        keywordInserted = keywordResp.inserted || 0;
+      }
+
+      setDbStatus(
+        `Inserted ${keywordInserted} keyword + ${listingInserted} daily rows.`,
+        "success"
+      );
+
+      // Mark the current keyword listing as done in the manual queue so
+      // Open Next becomes clickable for the next listing.
+      const current = getCurrentKeywordItem();
+      if (current) {
+        current.status = "done";
+        current.captured_at = new Date().toISOString();
+        saveKeywordQueue();
+      }
+      buildKeywordQueueFromSessions();
+      applyPageContext(currentPageType);
     } catch (error) {
       setDbStatus(String(error && error.message ? error.message : error), "error");
     } finally {
