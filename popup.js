@@ -1484,7 +1484,21 @@ document.addEventListener("DOMContentLoaded", () => {
     );
 
     if (keywordRows.length === 0 && dailyRows.length === 0) {
-      setDbStatus("No keyword or daily rows found to insert.", "error");
+      // Diagnostic: count how many captured sessions look like daily-stats
+      // and keyword payloads so we can tell capture-vs-transform issues apart.
+      let dailyCaptures = 0;
+      let keywordCaptures = 0;
+      for (const s of allSessions) {
+        const b = s && s.body;
+        if (!b || typeof b !== "object") continue;
+        if (b.listing && Array.isArray(b.graphStats)) dailyCaptures++;
+        if (Array.isArray(b.queryStats) || Array.isArray(b.queries)) keywordCaptures++;
+      }
+      setDbStatus(
+        `No rows to insert. Captured: ${dailyCaptures} daily-stats, ${keywordCaptures} keyword-stats sessions. ` +
+        `Visit the listing's keyword page and try again.`,
+        "error"
+      );
       return;
     }
 
